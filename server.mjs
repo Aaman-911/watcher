@@ -355,8 +355,12 @@ async function handle(req, res) {
   }
 
   // --- ui ------------------------------------------------------------
+  if (p === '/inject-ui') return serveUi(res, 'inject.html',    'Live attack injection', 5);
   if (p === '/approve')   return serveUi(res, 'approve.html',   'The approval screen', 6);
   if (p === '/scorecard') return serveUi(res, 'scorecard.html', 'The scorecard',       7);
+  if (p === '/results/scorecard.json' && req.method === 'GET') {
+    return sendJson(res, 200, readJsonFile(path.join(RESULTS, 'scorecard.json')));
+  }
 
   // --- static --------------------------------------------------------
   if (req.method !== 'GET' && req.method !== 'HEAD') {

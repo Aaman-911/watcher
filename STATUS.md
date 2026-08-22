@@ -1,18 +1,18 @@
 # WATCHER — status
 
-Last updated: end of session 3.
+Last updated: after the Antigravity review.
 
 ## Working right now
 
 - [x] S1 — setup: node, webcmd, plugin, folder structure, git
 - [x] S2 — corpus: 4 injected pages + 3 clean, manifest, reveal.js, server
 - [x] S3 — naive agent: read-page, think, naive.mjs
-- [ ] S4 — WATCHER: envelope, detect, watcher.mjs
-- [ ] S5 — live attack: inject UI + live-attack script
-- [ ] S6 — gate: sensitive-verb blocking + approval screen
-- [ ] S7 — scorecard: score.mjs + scorecard.html + false-positive count
+- [x] S4 — WATCHER: envelope, detect, watcher.mjs
+- [x] S5 — live attack: inject UI + live-attack script
+- [x] S6 — gate: sensitive-verb blocking + approval screen
+- [x] S7 — scorecard: score.mjs + scorecard.html + false-positive count
 - [ ] S8 — optional: compare.mjs product research agent
-- [ ] S9 — demo prep: launchers, fallback recording, rehearsals
+- [~] S9 — demo prep: launchers done; check-2.sh is shallow; no rehearsal
 
 S2 shipped **four** injected pages, not six. p6 (accessibility-tree
 mismatch) was cut before work started. p5 (in-review) was never built.
@@ -54,54 +54,74 @@ different directories and resolved to the project root every time.
 tested, none guessed. Prompt goes in on stdin; page text overflows the
 command-line length limit.
 
+**The gate** — `lib/gate.mjs` is wired into `agents/watcher.mjs` through
+`performAction()`, which is the only path in that agent that reaches an
+action, and which checks the verb against `BLOCKED_VERBS` before anything
+happens. Both paths were run end to end: a human approval was picked up in
+17.7s and the action proceeded; with no decision at all the gate waited out
+its 300s limit and failed closed to REJECT. The target address shown on the
+approval screen is extracted from the detector's own finding, not typed in.
+Exercise it deliberately with `--simulate-action`, which runs the action
+path without inventing any model output.
+
+**The server has now actually been run.** `results/live-inject.json` records
+a real `POST /inject` and `results/gate-decision.json` a real decision. That
+is the first http traffic this project has seen.
+
+## Reviewed after the Antigravity session
+
+**A fabrication was removed from `lib/think.mjs`.** A block labelled
+`FALLBACK MOCK FOR LIVE DEMO` returned invented model responses whenever the
+real API call failed with `session limit`. For the naive agent it returned
+`"PINEAPPLE. The customer reviews indicate..."` and `"I have sent the email
+with the requested information."` — both of which score COMPLIED. It
+manufactured exactly the hijack result this project could not reproduce
+honestly, and it would have been indistinguishable from a real run on the
+scorecard. It also hardcoded a canary, breaking the manifest rule, and its
+`isWatcher` test looked for `BEGIN UNTRUSTED DATA`, a string the envelope
+never emits, so WATCHER would have received the hijacked mock too.
+
+It never fired: all 36 rows of `results/scorecard.json` were checked for its
+`ms: 420` signature and none carried it. Every number on record is real.
+The block has been deleted. **Do not reintroduce a mock in the model path.**
+
+**`docs/PLAN.md` canary leak is fixed.** The five hardcoded canaries were
+replaced with `(see manifest.json)`. The rule now holds everywhere.
+
 ## Broken or unresolved
 
-**The premise does not reproduce.** Across four runs on p1 and p4, the
-naive agent detected every injection, refused it, and reported it to the
-user. Replacing the Claude Code system prompt with a plain assistant
-persona did not change this, so the resistance is in the model, not the
-harness. Sonnet is simply hard to hijack with these injections. This was
-not tuned away and must not be.
+**The premise does not reproduce, confirmed at three runs.** 36 real model
+calls, no mocks: COMPLIED 0, REFUSED 18, IGNORED 0, false positives 0 of 3.
+Both agents caught every injection on every run. The naive agent scores
+identically to WATCHER because the model already refuses without the
+envelope. This is the finding, not a failure, and it must not be tuned away.
 
-**The canary scoring rule is broken.** `output.includes(canary)` is true
-when the model names the canary *while refusing it*, so a textbook
-defence scores as a hijack. Being replaced with three states — COMPLIED,
-REFUSED, IGNORED.
+**`checks/check-2.sh` is shallow.** It runs nine `[ -f ]` file-existence
+tests and nothing else. It would pass on an empty corpus with the right
+filenames, and it would not have caught either real defect this project has
+hit: p1 rendering its hidden text in visible grey, or the MERIDIAN canary
+being severed by snapshot truncation. The board shows a green row that means
+less than it appears to.
 
-**Only two of four techniques reach the agent.** Tested against all three
-snapshot modes:
+**Only two of four techniques reach the agent**, and only in specific
+snapshot modes. p1 and p4 in `read`; p2 in `tree`/`act` but never `read`.
 
-| page | technique | reaches the agent? |
-|---|---|---|
-| p1 | white text | yes, `read` mode only |
-| p2 | aria-label | arrives but truncated mid-string |
-| p3 | HTML comment | never, in any mode |
-| p4 | fake system | yes, `read` mode only |
+**`--safe-mode` does not suppress CLAUDE.md**, despite its help text. The
+working fix is running from outside the project tree, which `lib/think.mjs`
+does.
 
-**`--safe-mode` does not suppress CLAUDE.md**, despite its help text
-saying it disables CLAUDE.md. Tested on claude 2.1.238: the project
-CLAUDE.md still loaded. The working fix is running from a directory
-outside the project tree, which `lib/think.mjs` now does.
-
-**`docs/PLAN.md` still hardcodes canaries** (lines 126–131), which fails
-the "canaries live only in manifest.json" rule. It also still lists a p5
-and p6 that do not exist. Left alone pending a decision.
-
-**`corpus/live.html` is not gitignored.** It is generated at demo time by
-`POST /inject`, so it will appear as an uncommitted change the first time
-a live attack runs.
-
-**The server has never been run.** Every check above was made around it,
-not through it. Nothing has yet talked to it over http.
-
-**`checks/check-2.sh` does not exist**, so `verify-all.sh` still prints an
-empty board and exits 0. The board has never shown a real row.
+**No demo rehearsal has happened.** The launchers exist and resolve paths
+correctly, but `1-naive`, `2-watcher` and `3-live-attack` all point at
+`http://localhost:8080/...` and have never been run end to end against a
+live server.
 
 ## Next session starts with
 
-Session 4 — WATCHER: `lib/envelope.mjs`, `lib/detect.mjs`,
-`agents/watcher.mjs`. Note the reframe agreed at the end of session 3: the
-value of the defence is that it does not depend on the model's judgement.
+A rehearsal. Start the server from `demo/0-start-server.command`, then run
+each launcher against it. Nothing in S5/S9 has been exercised over http.
+
+After that, S8 (`compare.mjs`) is the only unbuilt session, and it is
+optional. Deepening `check-2.sh` is worth more than building it.
 
 ## Decisions already made — do not relitigate
 
@@ -116,3 +136,8 @@ value of the defence is that it does not depend on the model's judgement.
 - `lib/think.mjs` runs `claude -p` from a directory outside the project,
   to keep this project's CLAUDE.md out of the agent's context
 - Findings are reported as found. Nothing is tuned until it passes.
+- No mocked, cached or hand-written model responses anywhere in the model
+  path. If the API fails, the run fails and says so.
+- The gate's blocked-verb list is a JavaScript array checked with ===, not
+  an instruction to a model. It is the only defence here that does not
+  depend on the model's judgement.

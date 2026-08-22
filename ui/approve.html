@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WATCHER — Approval Gate</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  
+  :root {
+    --bg-color: #f4f4f5;
+    --text-main: #18181b;
+    --text-muted: #71717a;
+    --card-bg: #ffffff;
+    --border: #e4e4e7;
+    --primary: #09090b;
+    --success: #16a34a;
+    --danger: #dc2626;
+  }
+  body {
+    margin: 0;
+    font: 15px/1.6 "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    color: var(--text-main);
+    background: var(--bg-color);
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    align-items: center;
+    padding: 60px 24px;
+    box-sizing: border-box;
+  }
+  .header {
+    margin-bottom: 40px;
+    text-align: center;
+  }
+  h1 {
+    font-size: 24px;
+    font-weight: 600;
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+  }
+  .subtitle {
+    color: var(--text-muted);
+    margin: 0;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.04);
+    width: 100%;
+    max-width: 560px;
+    overflow: hidden;
+    transition: all 0.3s ease;
+  }
+  .card-header {
+    padding: 24px 32px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #fafafa;
+  }
+  .card-header h2 {
+    font-size: 16px;
+    margin: 0;
+    font-weight: 600;
+  }
+  .badge {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .badge.pending {
+    background: #fef08a;
+    color: #854d0e;
+    animation: pulse-bg 2s infinite;
+  }
+  @keyframes pulse-bg {
+    0% { background: #fef08a; }
+    50% { background: #fde047; }
+    100% { background: #fef08a; }
+  }
+  .card-body {
+    padding: 32px;
+  }
+  .detail-row {
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+  }
+  .detail-row:last-child {
+    margin-bottom: 0;
+  }
+  .detail-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .detail-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background: var(--bg-color);
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    color: var(--text-main);
+    word-break: break-all;
+    border: 1px solid var(--border);
+    white-space: pre-wrap;
+  }
+  .actions {
+    display: flex;
+    gap: 12px;
+    padding: 24px 32px;
+    border-top: 1px solid var(--border);
+    background: #fafafa;
+  }
+  button {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14px 24px;
+    border: 0;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: inherit;
+  }
+  .btn-approve {
+    background: var(--success);
+    color: white;
+    box-shadow: 0 2px 4px rgba(22, 163, 74, 0.2);
+  }
+  .btn-approve:hover { background: #15803d; transform: translateY(-1px); box-shadow: 0 4px 6px rgba(22, 163, 74, 0.25); }
+  .btn-approve:active { transform: translateY(0); box-shadow: none; }
+  
+  .btn-reject {
+    background: var(--danger);
+    color: white;
+    box-shadow: 0 2px 4px rgba(220, 38, 38, 0.2);
+  }
+  .btn-reject:hover { background: #b91c1c; transform: translateY(-1px); box-shadow: 0 4px 6px rgba(220, 38, 38, 0.25); }
+  .btn-reject:active { transform: translateY(0); box-shadow: none; }
+  
+  .empty-state {
+    padding: 60px 32px;
+    text-align: center;
+  }
+  .empty-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.4;
+    filter: grayscale(1);
+  }
+  
+  @keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.6; }
+    100% { opacity: 1; }
+  }
+  .polling-indicator {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--success);
+    margin-right: 8px;
+    animation: pulse 2s infinite;
+  }
+  
+  #status-text {
+    font-size: 13px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 24px;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>WATCHER Gate</h1>
+  <p class="subtitle">Review and authorize sensitive agent actions</p>
+</div>
+
+<div class="card" id="main-card">
+  <!-- Dynamic Content Injected Here -->
+</div>
+
+<div id="status-text">
+  <span class="polling-indicator"></span> Polling for pending requests...
+</div>
+
+<script>
+  const card = document.getElementById('main-card');
+  let currentId = null;
+  let processing = false;
+
+  function renderEmpty() {
+    card.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">🛡️</div>
+        <h2>All clear</h2>
+        <p style="color: var(--text-muted); margin: 8px 0 0;">There are no pending actions to review.</p>
+      </div>
+    `;
+    currentId = null;
+  }
+
+  function renderPending(data) {
+    let detailsHtml = '';
+    for (const [key, value] of Object.entries(data)) {
+      if (key === 'id' || key === 'requested_at') continue;
+      
+      const displayValue = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+      detailsHtml += `
+        <div class="detail-row">
+          <div class="detail-label">${key.replace(/_/g, ' ')}</div>
+          <div class="detail-value">${escapeHtml(displayValue)}</div>
+        </div>
+      `;
+    }
+
+    card.innerHTML = `
+      <div class="card-header">
+        <h2>Action Authorization Required</h2>
+        <span class="badge pending">Pending</span>
+      </div>
+      <div class="card-body">
+        <div class="detail-row" style="margin-bottom: 24px;">
+          <div class="detail-label">Requested At</div>
+          <div style="font-size: 14px; font-weight: 500;">${new Date(data.requested_at).toLocaleString()}</div>
+        </div>
+        ${detailsHtml}
+      </div>
+      <div class="actions">
+        <button class="btn-reject" onclick="decide('reject')">Reject Action</button>
+        <button class="btn-approve" onclick="decide('approve')">Approve Action</button>
+      </div>
+    `;
+  }
+
+  async function poll() {
+    if (processing) return;
+    try {
+      const res = await fetch('/gate/pending');
+      const data = await res.json();
+      
+      if (!data && currentId !== null) {
+        renderEmpty();
+      } else if (data && data.id !== currentId) {
+        currentId = data.id;
+        renderPending(data);
+      }
+    } catch (err) {
+      console.error('Polling error:', err);
+    }
+  }
+
+  window.decide = async function(decision) {
+    if (processing) return;
+    processing = true;
+    
+    const btns = card.querySelectorAll('button');
+    btns.forEach(btn => {
+      btn.style.opacity = '0.5';
+      btn.style.pointerEvents = 'none';
+      btn.textContent = 'Processing...';
+    });
+
+    try {
+      await fetch('/gate/decide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision })
+      });
+      processing = false;
+      await poll();
+    } catch (err) {
+      console.error('Decision error:', err);
+      alert('Failed to submit decision. Please check server connection.');
+      processing = false;
+      await poll();
+    }
+  };
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  renderEmpty();
+  setInterval(poll, 1000);
+  poll();
+</script>
+
+</body>
+</html>
