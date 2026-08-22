@@ -77,3 +77,26 @@ test('read returns empty when the file does not exist yet', () => {
   assert.deepEqual(audit.read(), []);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('a spoofed runId or at in the payload cannot override the audit\'s own identity', () => {
+  const { dir, file } = tmpFile();
+  const audit = createAudit({ path: file, runId: 'run-6', clock: () => '2026-01-01T00:00:00.000Z' });
+
+  const ev = audit.record({ type: 'x', runId: 'spoofed-run', at: 'SPOOFED' });
+
+  // The returned event must carry the audit's real identity, not the
+  // payload's.
+  assert.equal(ev.runId, 'run-6');
+  assert.equal(ev.at, '2026-01-01T00:00:00.000Z');
+
+  // The read-back path is what actually matters: a payload runId must not
+  // cause the event to vanish from this run's log (nor surface under
+  // whatever run 'spoofed-run' might belong to).
+  const readBack = audit.read();
+  assert.equal(readBack.length, 1);
+  assert.equal(readBack[0].runId, 'run-6');
+  assert.equal(readBack[0].at, '2026-01-01T00:00:00.000Z');
+  assert.equal(readBack[0].type, 'x');
+
+  rmSync(dir, { recursive: true, force: true });
+});

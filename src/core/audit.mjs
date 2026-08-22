@@ -22,7 +22,12 @@ export function createAudit({ path: file, runId, clock = isoNow }) {
   mkdirSync(path.dirname(file), { recursive: true });
 
   function record(event) {
-    const full = { at: clock(), runId, ...event };
+    // The audit's own identity fields must always win over anything in the
+    // caller's payload — an event carrying its own runId or at would
+    // otherwise spoof which run it belongs to, or vanish from read()'s
+    // runId filter. Spread the payload first so `at` and `runId` below
+    // always overwrite whatever the caller supplied.
+    const full = { ...event, at: clock(), runId };
     appendFileSync(file, JSON.stringify(full) + '\n');
     return full;
   }
