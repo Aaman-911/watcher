@@ -1,0 +1,17 @@
+{
+  "name": "watcher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Prompt-injection defence for agents, and a defended browsing agent built on it.",
+  "exports": {
+    ".": "./src/core/index.mjs"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.mjs'"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "dependencies": {}
+}
