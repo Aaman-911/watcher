@@ -8,7 +8,7 @@
 // A page can say whatever it likes; it cannot reach these functions, and
 // these functions do not read anything a page wrote.
 
-const DEFAULT_BLOCKED_VERBS = [
+export const DEFAULT_BLOCKED_VERBS = [
   'send', 'submit', 'pay', 'buy', 'delete', 'message', 'post', 'transfer'
 ];
 
@@ -22,6 +22,24 @@ const DEFAULTS = {
 // agent that can read file:// can read the whole disk, and the allowlist is
 // expressed in hostnames, which file: URLs do not meaningfully have.
 const ALLOWED_SCHEMES = new Set(['http:', 'https:']);
+
+// Words that name a blocked verb without using the verb itself. A control
+// reading "Place order" performs a purchase; one reading "Checkout" is the
+// last step before one. Mapped to the verb they effectively perform.
+const CONTROL_SYNONYMS = [
+  [/\b(place|confirm)\s+(the\s+)?order\b/i, 'buy'],
+  [/\bcheckout\b/i, 'buy'],
+  [/\badd\s+to\s+(basket|cart|bag)\b/i, 'buy'],
+  [/\bplace\s+bid\b/i, 'buy'],
+  [/\bconfirm\b/i, 'submit'],
+  [/\bremove\b/i, 'delete'],
+  [/\bunsubscribe\b/i, 'submit'],
+  [/\bpublish\b/i, 'post'],
+  [/\bshare\b/i, 'post'],
+  [/\breply\b/i, 'message'],
+  [/\bwithdraw\b/i, 'transfer'],
+  [/\bdeposit\b/i, 'transfer']
+];
 
 function normaliseHost(host) {
   return String(host || '').toLowerCase().replace(/\.$/, '');
@@ -69,6 +87,34 @@ export function createPolicy(options = {}) {
       : { allowed: false, reason: `${host} is not on the allowlist (${allowHosts.join(', ') || 'empty'})` };
   }
 
-  const policy = { canVisit, limits: () => limits, allowHosts, blockedVerbs };
+  function canAct(verb) {
+    const v = String(verb || '').trim().toLowerCase();
+    const needsApproval = blockedVerbs.includes(v);
+    return {
+      allowed: true,
+      needsApproval,
+      reason: needsApproval
+        ? `"${v}" is a blocked verb and always needs a human`
+        : `"${v}" is not a blocked verb`
+    };
+  }
+
+  // What does this control actually DO? A click is not inherently safe: a
+  // click on "Place order" is a purchase. Everything the control says about
+  // itself is scanned, and an ambiguous control is treated as sensitive.
+  function verbOfControl({ name, text, formAction } = {}) {
+    const haystack = [text, name, formAction].filter(Boolean).join(' ').toLowerCase();
+    if (!haystack.trim()) return null;
+
+    for (const verb of blockedVerbs) {
+      if (new RegExp(`\\b${verb}\\b`, 'i').test(haystack)) return verb;
+    }
+    for (const [re, verb] of CONTROL_SYNONYMS) {
+      if (re.test(haystack)) return verb;
+    }
+    return null;
+  }
+
+  const policy = { canVisit, canAct, verbOfControl, limits: () => limits, allowHosts, blockedVerbs };
   return Object.freeze(policy);
 }
