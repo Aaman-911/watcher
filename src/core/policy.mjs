@@ -63,6 +63,53 @@ function hostMatches(host, pattern) {
   return h === p;
 }
 
+// Field identifiers that mean "this is a secret". Matched against type,
+// name, id, label and placeholder.
+const CREDENTIAL_FIELD = /\b(pass(word|wd)?|pwd|pin|cvv|cvc|otp|one[-_ ]?time|mfa|totp|secret|token|api[-_ ]?key|access[-_ ]?token|auth|credential|card[-_ ]?number|cardnum|ccnum|ssn|social[-_ ]?security|passport|routing|iban|sort[-_ ]?code)\b/i;
+
+// Values that are secrets regardless of where they are being typed.
+const SECRET_VALUE = [
+  /^sk-[A-Za-z0-9_-]{16,}$/,
+  /^sk_(live|test)_[A-Za-z0-9]{16,}$/,
+  /^gh[pousr]_[A-Za-z0-9]{20,}$/,
+  /^AKIA[0-9A-Z]{16}$/,
+  /^xox[baprs]-[A-Za-z0-9-]{20,}$/,
+  /^eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./   // JWT
+];
+
+function looksLikeCardNumber(value) {
+  const digits = String(value).replace(/[\s-]/g, '');
+  if (!/^\d{13,19}$/.test(digits)) return false;
+  // Luhn
+  let sum = 0, alt = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let n = Number(digits[i]);
+    if (alt) { n *= 2; if (n > 9) n -= 9; }
+    sum += n;
+    alt = !alt;
+  }
+  return sum % 10 === 0;
+}
+
+// Shannon entropy per character, in bits.
+function entropy(s) {
+  const counts = new Map();
+  for (const ch of s) counts.set(ch, (counts.get(ch) || 0) + 1);
+  let h = 0;
+  for (const n of counts.values()) {
+    const p = n / s.length;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
+
+function looksLikeSecretBlob(value) {
+  const v = String(value);
+  // Prose has spaces. A long unbroken high-entropy run does not.
+  if (v.length < 32 || /\s/.test(v)) return false;
+  return entropy(v) > 3.5;
+}
+
 export function createPolicy(options = {}) {
   const allowHosts = Object.freeze([...(options.allowHosts || [])]);
   const blockedVerbs = Object.freeze(
@@ -123,6 +170,36 @@ export function createPolicy(options = {}) {
     return null;
   }
 
-  const policy = { canVisit, canAct, verbOfControl, limits: () => limits, allowHosts, blockedVerbs };
+  // Credential refusal. THIS IS NOT CONFIGURABLE. There is deliberately no
+  // option consulted here — not from `options`, not from config, not from
+  // anywhere. An agent that can type a password can be made to leak one, and
+  // no task this agent performs is worth that.
+  function canFill(field = {}, value = '') {
+    const f = field || {};
+    if (String(f.type || '').toLowerCase() === 'password') {
+      return { allowed: false, reason: 'this is a password input; WATCHER never types credentials' };
+    }
+
+    const identifiers = [f.type, f.name, f.id, f.label, f.placeholder]
+      .filter(Boolean).join(' ');
+    if (CREDENTIAL_FIELD.test(identifiers)) {
+      return { allowed: false, reason: `field "${identifiers.trim()}" looks like a credential field; WATCHER never types credentials` };
+    }
+
+    const v = String(value ?? '');
+    if (looksLikeCardNumber(v)) {
+      return { allowed: false, reason: 'that value looks like a card number' };
+    }
+    if (SECRET_VALUE.some(re => re.test(v))) {
+      return { allowed: false, reason: 'that value looks like an API key or token' };
+    }
+    if (looksLikeSecretBlob(v)) {
+      return { allowed: false, reason: 'that value looks like a secret (long, unbroken, high entropy)' };
+    }
+
+    return { allowed: true, reason: 'not a credential field or value' };
+  }
+
+  const policy = { canVisit, canAct, canFill, verbOfControl, limits: () => limits, allowHosts, blockedVerbs };
   return Object.freeze(policy);
 }
