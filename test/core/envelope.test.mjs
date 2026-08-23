@@ -130,3 +130,26 @@ for (const variant of caseAndWhitespaceVariants) {
     );
   });
 }
+
+// --- Finding 3 (performance regression): the tag-lookalike matcher used
+// to have two `\s*` quantifiers straddling the optional slash group. On a
+// run of whitespace with no slash in it, that pair is ambiguous — the
+// engine can split the run between the two `\s*` in many different ways
+// before giving up — which made neutraliseDelimiters() quadratic in the
+// length of an attacker-controlled run of whitespace after a lone `<`.
+// This guards against that regressing: a single `<` followed by a long
+// run of spaces (no closing tag at all) must still complete fast. If this
+// test ever needs a bigger time budget to pass, that is a sign the
+// quadratic behaviour is back, not a reason to raise the bound further
+// without checking the growth curve first (see task-7-report.md, Finding 3).
+test('neutraliseDelimiters does not blow up on a long attacker-controlled whitespace run', () => {
+  const hostile = '<' + ' '.repeat(40000);
+  const start = performance.now();
+  envelope({ ...base, pageText: hostile });
+  const elapsed = performance.now() - start;
+  assert.ok(
+    elapsed < 250,
+    `expected under 250ms for 40,000 spaces, took ${elapsed.toFixed(1)}ms — ` +
+    'possible reintroduction of quadratic backtracking in TAG_LOOKALIKE'
+  );
+});

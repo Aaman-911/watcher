@@ -26,7 +26,19 @@ const CLOSE = '</untrusted-page>';
 // the closing `>`. That keeps the replacement visually near-identical to
 // the real delimiter while guaranteeing it is never a byte-for-byte match
 // for it, so it cannot itself be closed by a nested occurrence.
-const TAG_LOOKALIKE = /<\s*(\/)?\s*untrusted-page\s*>/gi;
+//
+// The leading whitespace and the optional slash are grouped together as
+// one atomic unit — `(?:\s*(\/))?` — rather than as two separate `\s*`
+// quantifiers straddling the slash. Two independent `\s*` around the same
+// optional group are ambiguous on a run of whitespace with no slash in
+// it: the engine can split that run between them arbitrarily many ways
+// before giving up, which is quadratic in the run length and lets a page
+// (attacker-controlled by definition) burn CPU with nothing but `<` plus
+// a long run of spaces. Folding them into one group removes the
+// ambiguity — there is exactly one way to match it, empty or not — while
+// still capturing the slash (group 1) when present, so the open/close
+// replacement choice below is unaffected.
+const TAG_LOOKALIKE = /<(?:\s*(\/))?\s*untrusted-page\s*>/gi;
 
 function neutraliseDelimiters(text) {
   return String(text ?? '').replace(TAG_LOOKALIKE, (_, slash) =>
