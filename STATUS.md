@@ -12,7 +12,7 @@ Last updated: after the Antigravity review.
 - [x] S6 — gate: sensitive-verb blocking + approval screen
 - [x] S7 — scorecard: score.mjs + scorecard.html + false-positive count
 - [ ] S8 — optional: compare.mjs product research agent
-- [~] S9 — demo prep: launchers done; check-2.sh is shallow; no rehearsal
+- [~] S9 — demo prep: launchers done; no rehearsal
 - [x] CORE — src/core: policy, detect, envelope, gate, outcome, audit
 
 S2 shipped **four** injected pages, not six. p6 (accessibility-tree
@@ -108,12 +108,18 @@ Both agents caught every injection on every run. The naive agent scores
 identically to WATCHER because the model already refuses without the
 envelope. This is the finding, not a failure, and it must not be tuned away.
 
-**`checks/check-2.sh` is shallow.** It runs nine `[ -f ]` file-existence
-tests and nothing else. It would pass on an empty corpus with the right
-filenames, and it would not have caught either real defect this project has
-hit: p1 rendering its hidden text in visible grey, or the MERIDIAN canary
-being severed by snapshot truncation. The board shows a green row that means
-less than it appears to.
+**`checks/check-2.sh` was shallow; Task 11 deepened it.** The original
+version ran nine `[ -f ]` file-existence tests and nothing else. It would
+have passed on an empty corpus with the right filenames, and it caught
+neither real defect this project has hit: p1 rendering its hidden text in
+visible grey because `.review p` out-specified `.ghost`, or the MERIDIAN
+canary being severed by ~140-char accessible-name truncation. The current
+version parses `manifest.json` and asserts content: every canary is
+present in both its own `injected_text` and its own page file, p1's rule
+is scoped `.review p.ghost{` so the concealment actually conceals, and
+MERIDIAN sits at an offset (86) that the check verifies is ≤130 and so
+survives truncation. Wired into `checks/verify-all.sh` alongside
+`checks/check-core.sh`.
 
 **Only two of four techniques reach the agent**, and only in specific
 snapshot modes. p1 and p4 in `read`; p2 in `tree`/`act` but never `read`.
@@ -133,7 +139,7 @@ A rehearsal. Start the server from `demo/0-start-server.command`, then run
 each launcher against it. Nothing in S5/S9 has been exercised over http.
 
 After that, S8 (`compare.mjs`) is the only unbuilt session, and it is
-optional. Deepening `check-2.sh` is worth more than building it.
+optional.
 
 ## Decisions already made — do not relitigate
 
