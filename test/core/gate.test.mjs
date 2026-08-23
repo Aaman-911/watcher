@@ -122,3 +122,112 @@ test('the file transport survives a partially written decision file', () => {
   assert.equal(transport.poll(), null, 'a torn write must read as no decision yet');
   rmSync(dir, { recursive: true, force: true });
 });
+
+// --- Fix round 1 -----------------------------------------------------------
+//
+// Finding 1 (Critical): a decision must be bound to the request awaiting it.
+// Without that binding, two agent processes sharing one file transport can
+// cross wires — a human approves the action they can currently see, and
+// BOTH the request they saw and some other in-flight request accept that
+// same answer. The fix: publish() carries an id, poll(expectedId) only
+// returns a decision whose id matches, and a decision with no id at all
+// never matches a real request.
+
+test("a decision naming an earlier request is not accepted by a later request", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'watcher-gate-'));
+  const pendingPath = path.join(dir, 'pending.json');
+  const decisionPath = path.join(dir, 'decision.json');
+  const transport = createFileTransport({ pendingPath, decisionPath });
+
+  // A decision naming an earlier, unrelated request is already sitting on
+  // disk when this request starts — for example two agent processes
+  // sharing one transport, or a decision left over from a run that crashed
+  // before its own cleanup ran.
+  writeFileSync(decisionPath, JSON.stringify({ id: 'earlier-request', decision: 'approve' }));
+
+  let elapsed = 0;
+  const gate = createGate({
+    transport,
+    timeoutMs: 50,
+    sleep: () => { elapsed += 25; return Promise.resolve(); },
+    clock: () => elapsed
+  });
+
+  // This request's own id (derived from clock()) will never equal
+  // 'earlier-request'. The leftover decision must be ignored, and with
+  // nothing else ever answering, this must time out to reject rather than
+  // silently inherit an approval that was never actually given to it.
+  const decision = await gate.request({ verb: 'delete', target: 'account', summary: 's' });
+  assert.equal(decision, 'reject', 'a decision meant for a different request must not be accepted');
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a decision with no id at all is not accepted', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'watcher-gate-'));
+  const pendingPath = path.join(dir, 'pending.json');
+  const decisionPath = path.join(dir, 'decision.json');
+  const transport = createFileTransport({ pendingPath, decisionPath });
+
+  writeFileSync(decisionPath, JSON.stringify({ decision: 'approve' }));   // no id field
+
+  let elapsed = 0;
+  const gate = createGate({
+    transport,
+    timeoutMs: 50,
+    sleep: () => { elapsed += 25; return Promise.resolve(); },
+    clock: () => elapsed
+  });
+
+  const decision = await gate.request({ verb: 'delete', target: 'account', summary: 's' });
+  assert.equal(decision, 'reject', 'a decision with no id must never be treated as an answer to a real request');
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// Finding 2 (Important): a throwing transport must fail closed, not escape
+// request() as a rejected promise — a caller that catches and continues
+// would otherwise fail open.
+
+test('a transport whose publish throws resolves reject, not a rejected promise', async () => {
+  const events = [];
+  const audit = { record: e => { events.push(e); return e; }, read: () => events };
+  const t = {
+    publish: () => { throw new Error('disk full'); },
+    poll: () => null,
+    clear: () => {}
+  };
+  const gate = createGate({ transport: t, timeoutMs: 1000, sleep: noSleep, audit });
+
+  const decision = await gate.request({ verb: 'send', target: 'x', summary: 's' });
+  assert.equal(decision, 'reject');
+
+  const kinds = events.map(e => e.type);
+  assert.ok(kinds.includes('gate_requested'), 'evidence that an approval was asked for must survive a transport failure');
+  assert.ok(kinds.includes('gate_decided'));
+  assert.equal(events.find(e => e.type === 'gate_decided').decision, 'reject');
+});
+
+test('a transport whose poll throws also fails closed', async () => {
+  const t = {
+    publish: () => {},
+    poll: () => { throw new Error('boom'); },
+    clear: () => {}
+  };
+  const gate = createGate({ transport: t, timeoutMs: 1000, sleep: noSleep });
+  assert.equal(await gate.request({ verb: 'send', target: 'x', summary: 's' }), 'reject');
+});
+
+test('a transport that fails during cleanup after a genuine approval still fails closed', async () => {
+  // A disk error while tidying up is not the same thing as "no one ever
+  // touched the transport" — but it is still an anomaly in the one path
+  // that is supposed to be the most trustworthy thing in the project, so
+  // it is treated the same paranoid way as every other transport failure.
+  const t = {
+    publish: () => {},
+    poll: () => 'approve',
+    clear: () => { throw new Error('cannot delete'); }
+  };
+  const gate = createGate({ transport: t, timeoutMs: 1000, sleep: noSleep });
+  assert.equal(await gate.request({ verb: 'send', target: 'x', summary: 's' }), 'reject');
+});
