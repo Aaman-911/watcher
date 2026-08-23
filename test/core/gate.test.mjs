@@ -301,29 +301,49 @@ test('two requests created in the same clock tick receive different ids, and a d
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('two genuinely concurrent requests on one shared transport: an earlier request timing out does not destroy a later request\'s real approval', async () => {
+// Reworked in fix round 3. The first version of this test (above pattern:
+// A timeoutMs=50 / two 25ms ticks, B timeoutMs=200 / same 25ms ticks) was
+// genuinely concurrent but did not land in the vulnerable window: B wrote
+// AND observed AND self-cleared its own decision on its first two ticks,
+// which finished strictly before A's second tick (A's own timeout). So by
+// the time A's clear() ever ran, B's files were already gone — clear()'s
+// id-scoping was never actually exercised, and reverting it left this test
+// passing 5/5. Caught by the reviewer reverting the fix in isolation.
+//
+// The fix: make A time out in exactly ONE tick (timeoutMs equals a single
+// sleep increment), so A's end-of-request clear() fires on A's very first
+// resumption — before B, which is still suspended inside its own first
+// sleep call, ever gets a chance to poll for (and therefore clear) the
+// decision it just wrote. That is the actual window Finding 1a describes.
+test('two genuinely concurrent requests on one shared transport: an earlier request timing out does not destroy a later request\'s still-unconsumed real approval', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'watcher-gate-'));
   const pendingPath = path.join(dir, 'pending.json');
   const decisionPath = path.join(dir, 'decision.json');
   const transport = createFileTransport({ pendingPath, decisionPath });
 
-  // Request A: published first, never answered, short timeout — it will
-  // time out while B is still in flight.
+  // Request A: published first, never answered, and times out in exactly
+  // ONE poll tick — timeoutMs equals one sleep increment, so its loop
+  // condition (clock() - started < timeoutMs) is already false the moment
+  // it resumes from its first (and only) sleep, with no second poll.
   let elapsedA = 0;
   const gateA = createGate({
-    transport, timeoutMs: 50,
+    transport, timeoutMs: 25,
     sleep: () => { elapsedA += 25; return Promise.resolve(); },
     clock: () => elapsedA
   });
   const promiseA = gateA.request({ verb: 'delete', target: 'accountA', summary: 's' });
   // gateA.request() runs synchronously up to its first `await sleep(...)`,
-  // so by this point A has already published — it is genuinely in flight,
-  // suspended mid-poll-loop, NOT awaited to completion.
+  // so by this point A has already published and done its first (null)
+  // poll — it is genuinely in flight, suspended mid-poll-loop, NOT awaited
+  // to completion.
 
   // Request B: started without awaiting A first. Publishing overwrites A's
-  // pending file, exactly as the finding describes. On B's own first poll
-  // tick, a decision naming B's id is written directly to disk — standing
-  // in for a human approving what they can actually see on screen.
+  // pending file, exactly as the finding describes. B's own decision is
+  // written to disk during its first sleep call — standing in for a human
+  // approving what they can actually see on screen — but B does not get to
+  // POLL for it (and therefore cannot clear it) until its NEXT resumption.
+  // B's timeout (200ms) is generous on purpose: this test is about what A
+  // does while B is still waiting, not about racing B's own deadline.
   let elapsedB = 0;
   let bAnswered = false;
   const gateB = createGate({
@@ -341,10 +361,72 @@ test('two genuinely concurrent requests on one shared transport: an earlier requ
   });
   const promiseB = gateB.request({ verb: 'delete', target: 'accountB', summary: 's' });
 
+  // Traced execution order (A suspended first, so its continuation is
+  // queued first and microtasks drain FIFO): A resumes, its loop condition
+  // is now false (25 < 25 is false), so it rejects and runs clear('A')
+  // immediately — while decisionPath still holds B's untouched, unread
+  // approval and pendingPath still holds B's untouched pending record.
+  // Only AFTER that does B get to resume, poll, find its own approval
+  // still intact, and clear it itself. This is the exact ordering Finding
+  // 1a describes, not a coincidence of `await Promise.all`.
   const [decisionA, decisionB] = await Promise.all([promiseA, promiseB]);
 
   assert.equal(decisionA, 'reject', 'A never received an answer meant for it and must time out');
-  assert.equal(decisionB, 'approve', "B's genuine human approval must survive A's end-of-request cleanup, even though both shared the same on-disk files");
+  assert.equal(decisionB, 'approve', "B's genuine human approval must survive A's end-of-request cleanup, even though A's clear() ran while B's decision was still on disk, unread and uncleared");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- Fix round 3 -----------------------------------------------------------
+//
+// Finding A (Critical): the round-1 id binding broke the real approval path
+// end to end, and no core test could catch it, because server.mjs and
+// ui/approve.html sit outside core's test surface. ui/approve.html posted
+// {decision} only; server.mjs's POST /gate/decide wrote {decision,
+// decided_at} — no id — to gate-decision.json; and poll(expectedId) treats
+// any decision whose id doesn't match (including a missing id, which never
+// equals a real request's id) as no answer at all. So every real approval
+// silently timed out and rejected. Fixed in server.mjs (POST /gate/decide
+// now requires and persists id, refusing the request with 400 if it's
+// missing) and ui/approve.html (now sends the id it read from GET
+// /gate/pending). These two tests pin the file CONTRACT the server writes
+// — the server itself is not started here, per the brief.
+
+test('the file transport accepts a decision shaped exactly like what the server now writes (id, decision, decided_at)', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'watcher-gate-'));
+  const pendingPath = path.join(dir, 'pending.json');
+  const decisionPath = path.join(dir, 'decision.json');
+  const transport = createFileTransport({ pendingPath, decisionPath });
+
+  transport.publish({ id: 'req-42', verb: 'send', target: 'a@b.test', requested_at: 'now' });
+
+  // Exactly the shape POST /gate/decide writes after this fix: the id read
+  // back from GET /gate/pending, plus decision and decided_at.
+  writeFileSync(decisionPath, JSON.stringify({
+    id: 'req-42', decision: 'approve', decided_at: new Date().toISOString()
+  }));
+
+  assert.equal(transport.poll('req-42'), 'approve');
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a server-shaped decision missing its id is not accepted — the exact shape that made the real approval path dead', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'watcher-gate-'));
+  const pendingPath = path.join(dir, 'pending.json');
+  const decisionPath = path.join(dir, 'decision.json');
+  const transport = createFileTransport({ pendingPath, decisionPath });
+
+  transport.publish({ id: 'req-42', verb: 'send', target: 'a@b.test', requested_at: 'now' });
+
+  // Before this fix, this was literally what server.mjs wrote for every
+  // single approval a human clicked: {decision, decided_at}, no id at all.
+  // poll(id) must not treat this as an answer to a real, id-bearing request.
+  writeFileSync(decisionPath, JSON.stringify({
+    decision: 'approve', decided_at: new Date().toISOString()
+  }));
+
+  assert.equal(transport.poll('req-42'), null);
 
   rmSync(dir, { recursive: true, force: true });
 });

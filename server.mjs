@@ -9,7 +9,12 @@
 //   GET  /approve          ui/approve.html      (placeholder until session 6)
 //   GET  /scorecard        ui/scorecard.html    (placeholder until session 7)
 //   GET  /gate/pending     results/gate-pending.json, or null
-//   POST /gate/decide      {decision} -> results/gate-decision.json
+//   POST /gate/decide      {id, decision} -> results/gate-decision.json
+//                          id must match the pending record's own id (see
+//                          GET /gate/pending); a body missing id is refused
+//                          with 400 rather than written, so a stale UI
+//                          fails loudly instead of producing a decision
+//                          that can never match the request awaiting it.
 //   POST /inject           {text, canary} -> corpus/live.html
 //
 // Start it from demo/0-start-server.command, in its own Terminal window.
@@ -316,10 +321,26 @@ async function handle(req, res) {
         received: decision === undefined ? null : decision
       });
     }
-    const record = { decision, decided_at: new Date().toISOString() };
+
+    // The gate binds a decision to the request that's waiting for it by id
+    // (src/core/gate.mjs). A decision written without one can never match
+    // any request — it just times out and rejects, silently. Refuse it
+    // outright instead: a stale UI (one still posting the old {decision}
+    // shape) fails loudly here rather than producing an approval that is
+    // quietly ignored forever.
+    const id = body.id;
+    if (typeof id !== 'string' || id.length === 0) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'id is required and must match the id from GET /gate/pending',
+        received: id === undefined ? null : id
+      });
+    }
+
+    const record = { id, decision, decided_at: new Date().toISOString() };
     fs.writeFileSync(path.join(RESULTS, 'gate-decision.json'),
                      JSON.stringify(record, null, 2) + '\n');
-    console.log(`  gate decision: ${decision.toUpperCase()}`);
+    console.log(`  gate decision: ${decision.toUpperCase()} (id ${id})`);
     return sendJson(res, 200, { ok: true, ...record });
   }
 
