@@ -13,3 +13,4 @@ export const VERSION = '0.1.0';
 export { createAudit } from './audit.mjs';
 export { createPolicy } from './policy.mjs';
 export { detect } from './detect.mjs';
+export { envelope } from './envelope.mjs';
