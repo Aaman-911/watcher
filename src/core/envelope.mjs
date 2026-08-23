@@ -13,23 +13,35 @@ const CLOSE = '</untrusted-page>';
 
 // A page that writes our own closing tag into its content would otherwise
 // appear to end the untrusted block early, and everything after it would
-// read as though it came from us. Neutralise both tags in the content.
+// read as though it came from us. Neutralise every spelling of both tags
+// in the content — not just an exact-case, no-whitespace match. A page (or
+// a page-derived value like a clicked element's accessible name, which
+// flows into history) can write `</UNTRUSTED-PAGE>`, `< /untrusted-page>`,
+// or `</untrusted-page\n>` and read exactly the same as the real thing to
+// a human or a loosely-tokenising model, so all of those must be caught
+// too.
 //
-// The replacement inserts a zero-width space (U+200B, invisible) before
-// the closing `>`, so the result is visually near-identical but never a
-// byte-for-byte match for the real delimiter, and so it cannot itself be
-// closed by a nested occurrence.
+// Every match, of either the open or close form, is replaced with a
+// canonical form carrying a zero-width space (U+200B, invisible) before
+// the closing `>`. That keeps the replacement visually near-identical to
+// the real delimiter while guaranteeing it is never a byte-for-byte match
+// for it, so it cannot itself be closed by a nested occurrence.
+const TAG_LOOKALIKE = /<\s*(\/)?\s*untrusted-page\s*>/gi;
+
 function neutraliseDelimiters(text) {
-  return String(text ?? '')
-    .split(OPEN).join('<untrusted-page​>')
-    .split(CLOSE).join('</untrusted-page​>');
+  return String(text ?? '').replace(TAG_LOOKALIKE, (_, slash) =>
+    slash ? '</untrusted-page​>' : '<untrusted-page​>'
+  );
 }
 
 function historyBlock(history) {
   if (!Array.isArray(history) || history.length === 0) return '';
-  const lines = history.map(h =>
-    `  step ${h.step}: ${h.action} ${h.target ?? ''} -> ${h.result ?? ''}`.replace(/\s+$/, '')
-  );
+  const lines = history.map(h => {
+    const action = neutraliseDelimiters(h.action);
+    const target = neutraliseDelimiters(h.target);
+    const result = neutraliseDelimiters(h.result);
+    return `  step ${h.step}: ${action} ${target} -> ${result}`.replace(/\s+$/, '');
+  });
   return `Previous steps you have already taken:\n\n${lines.join('\n')}\n\n`;
 }
 
