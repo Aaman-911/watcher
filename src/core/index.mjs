@@ -14,3 +14,4 @@ export { createAudit } from './audit.mjs';
 export { createPolicy } from './policy.mjs';
 export { detect } from './detect.mjs';
 export { envelope } from './envelope.mjs';
+export { createGate, createFileTransport } from './gate.mjs';
