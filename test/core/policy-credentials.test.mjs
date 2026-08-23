@@ -86,3 +86,49 @@ test('canFill handles missing fields without throwing', () => {
   assert.equal(policy.canFill({}, '').allowed, true);
   assert.equal(policy.canFill(undefined, undefined).allowed, true);
 });
+
+// --- Fix round 1: snake_case/camelCase compounds, SSN values, PEM keys ---
+//
+// \b in a JS regex treats `_` as a word character, so a bare CREDENTIAL_FIELD
+// term like \bsecret\b never matched inside `client_secret` — the whole
+// compound read as one "word". Only the alternatives that were hand-given an
+// explicit [-_ ]? separator (api_key, access_token, card_number,
+// social_security, sort_code) survived contact with real-world field naming
+// conventions. Everything else — snake_case OR camelCase — sailed through.
+
+test('snake_case and camelCase compound field names are refused', () => {
+  const names = [
+    'client_secret', 'private_key', 'secret_key', 'session_token',
+    'auth_code', 'pin_code', 'credential_id', 'otp_code',
+    'mfaToken', 'totp_secret', 'ssn_number', 'routing_number',
+    'iban_number', 'passport_number', 'cvv_code', 'pwd_hash'
+  ];
+  for (const name of names) {
+    const r = policy.canFill({ type: 'text', name }, 'whatever');
+    assert.equal(r.allowed, false, `field named "${name}" must be refused`);
+  }
+});
+
+test('an SSN-shaped value is refused whatever the field is called', () => {
+  assert.equal(policy.canFill({ type: 'text', name: 'notes' }, '123-45-6789').allowed, false);
+  assert.equal(policy.canFill({ type: 'text', name: 'notes' }, '123456789').allowed, false);
+});
+
+test('a PEM private key block is refused', () => {
+  const pem = [
+    '-----BEGIN RSA PRIVATE KEY-----',
+    'MIIEpAIBAAKCAQEA1c7YQ8f3n9examplekeymaterialexamplekeymaterial',
+    '-----END RSA PRIVATE KEY-----'
+  ].join('\n');
+  assert.equal(policy.canFill({ type: 'text', name: 'notes' }, pem).allowed, false);
+});
+
+// The compound-name fix must not start catching ordinary fields that merely
+// happen to share a substring or a naming style with a credential term.
+test('the widened credential-field check does not catch ordinary fields', () => {
+  const names = ['username', 'email', 'search', 'comment', 'review', 'address', 'firstname'];
+  for (const name of names) {
+    const r = policy.canFill({ type: 'text', name }, 'an ordinary value');
+    assert.equal(r.allowed, true, `field named "${name}" must not be refused`);
+  }
+});

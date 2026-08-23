@@ -64,8 +64,29 @@ function hostMatches(host, pattern) {
 }
 
 // Field identifiers that mean "this is a secret". Matched against type,
-// name, id, label and placeholder.
-const CREDENTIAL_FIELD = /\b(pass(word|wd)?|pwd|pin|cvv|cvc|otp|one[-_ ]?time|mfa|totp|secret|token|api[-_ ]?key|access[-_ ]?token|auth|credential|card[-_ ]?number|cardnum|ccnum|ssn|social[-_ ]?security|passport|routing|iban|sort[-_ ]?code)\b/i;
+// name, id, label and placeholder — after normaliseIdentifier() below, so
+// `\b` sees real word boundaries even where the source used snake_case,
+// kebab-case or camelCase.
+const CREDENTIAL_FIELD = /\b(pass(word|wd)?|pwd|pin|cvv|cvc|otp|one[-_ ]?time|mfa|totp|secret|token|key|api[-_ ]?key|access[-_ ]?token|auth|credential|card[-_ ]?number|cardnum|ccnum|ssn|social[-_ ]?security|passport|routing|iban|sort[-_ ]?code)\b/i;
+
+// JavaScript's \b treats `_` as a word character, so `\bsecret\b` never
+// matches inside `client_secret` — the whole compound reads as one "word"
+// to the regex engine. Rather than hand-add `[-_ ]?` to every alternative
+// above (the gap that produced: client_secret, private_key, session_token,
+// auth_code, ssn_number, and more all returning allowed:true), normalise
+// the identifier string first: split snake_case, kebab-case and camelCase
+// into real space-separated words, so `\b` lands where a human reader
+// would put a word boundary. This can only make CREDENTIAL_FIELD match
+// MORE identifiers than before, never fewer — every substring that matched
+// pre-normalisation still appears in the normalised string, just with
+// underscores/hyphens/case-boundaries turned into spaces.
+function normaliseIdentifier(s) {
+  return String(s || '')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')  // 'APIKey' -> 'API Key'
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')      // 'mfaToken' -> 'mfa Token'
+    .replace(/[_-]+/g, ' ')                      // 'client_secret' -> 'client secret'
+    .toLowerCase();
+}
 
 // Values that are secrets regardless of where they are being typed.
 const SECRET_VALUE = [
@@ -89,6 +110,23 @@ function looksLikeCardNumber(value) {
     alt = !alt;
   }
   return sum % 10 === 0;
+}
+
+// A US Social Security Number, dashed (123-45-6789) or bare (123456789).
+// Unlike a card number there is no checksum to confirm against, so this is
+// shape-only — refused regardless of what the field is named, same as
+// looksLikeCardNumber.
+function looksLikeSsn(value) {
+  const v = String(value).trim();
+  return /^\d{3}-\d{2}-\d{4}$/.test(v) || /^\d{9}$/.test(v);
+}
+
+// A PEM-encoded private key block, e.g. "-----BEGIN RSA PRIVATE KEY-----".
+// These are typically many lines and contain whitespace/newlines, so they
+// pass straight through looksLikeSecretBlob's no-whitespace gate — this
+// check exists specifically to catch what that one cannot.
+function looksLikePemKey(value) {
+  return /-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----/i.test(String(value));
 }
 
 // Shannon entropy per character, in bits.
@@ -182,13 +220,19 @@ export function createPolicy(options = {}) {
 
     const identifiers = [f.type, f.name, f.id, f.label, f.placeholder]
       .filter(Boolean).join(' ');
-    if (CREDENTIAL_FIELD.test(identifiers)) {
+    if (CREDENTIAL_FIELD.test(normaliseIdentifier(identifiers))) {
       return { allowed: false, reason: `field "${identifiers.trim()}" looks like a credential field; WATCHER never types credentials` };
     }
 
     const v = String(value ?? '');
     if (looksLikeCardNumber(v)) {
       return { allowed: false, reason: 'that value looks like a card number' };
+    }
+    if (looksLikeSsn(v)) {
+      return { allowed: false, reason: 'that value looks like a social security number' };
+    }
+    if (looksLikePemKey(v)) {
+      return { allowed: false, reason: 'that value looks like a PEM-encoded private key' };
     }
     if (SECRET_VALUE.some(re => re.test(v))) {
       return { allowed: false, reason: 'that value looks like an API key or token' };
