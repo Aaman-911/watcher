@@ -8,9 +8,9 @@
 // A page can say whatever it likes; it cannot reach these functions, and
 // these functions do not read anything a page wrote.
 
-export const DEFAULT_BLOCKED_VERBS = [
+export const DEFAULT_BLOCKED_VERBS = Object.freeze([
   'send', 'submit', 'pay', 'buy', 'delete', 'message', 'post', 'transfer'
-];
+]);
 
 const DEFAULTS = {
   maxSteps: 20,
@@ -31,9 +31,17 @@ const CONTROL_SYNONYMS = [
   [/\bcheckout\b/i, 'buy'],
   [/\badd\s+to\s+(basket|cart|bag)\b/i, 'buy'],
   [/\bplace\s+bid\b/i, 'buy'],
+  [/\bcomplete\s+(the\s+)?purchase\b/i, 'buy'],
+  [/\bproceed\s+to\s+payment\b/i, 'buy'],
   [/\bconfirm\b/i, 'submit'],
   [/\bremove\b/i, 'delete'],
   [/\bunsubscribe\b/i, 'submit'],
+  // \bsubscribe\b requires a word boundary immediately before "subscribe",
+  // which "unsubscribe" never has (the "un" prefix is all word chars, so
+  // there is no boundary between "un" and "subscribe") — this pattern
+  // cannot fire on "unsubscribe", which is caught by the entry above.
+  [/\bsubscribe\b/i, 'submit'],
+  [/\bauthori(s|z)e\b/i, 'submit'],
   [/\bpublish\b/i, 'post'],
   [/\bshare\b/i, 'post'],
   [/\breply\b/i, 'message'],

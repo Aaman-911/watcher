@@ -27,6 +27,19 @@ test('the exported default list is the documented one', () => {
     ['buy', 'delete', 'message', 'pay', 'post', 'send', 'submit', 'transfer']);
 });
 
+test('mutating the exported default list does not weaken a policy built afterwards', () => {
+  // DEFAULT_BLOCKED_VERBS is frozen at declaration. Demonstrated live in
+  // review: without the freeze, `DEFAULT_BLOCKED_VERBS.length = 0` silently
+  // cleared the gate for every policy constructed afterwards without an
+  // explicit blockedVerbs list. The mutation attempt must fail, and — this
+  // is the part that actually matters — a freshly built policy must still
+  // treat 'buy' as needing approval.
+  assert.throws(() => { DEFAULT_BLOCKED_VERBS.length = 0; }, /read only|not extensible|Cannot assign|frozen/i);
+  assert.throws(() => { DEFAULT_BLOCKED_VERBS.push('harmless'); }, /read only|not extensible|Cannot add|frozen/i);
+  const fresh = createPolicy({ allowHosts: ['localhost'] });
+  assert.equal(fresh.canAct('buy').needsApproval, true);
+});
+
 test('a click on a navigation control is not sensitive', () => {
   assert.equal(policy.verbOfControl({ text: 'Reviews' }), null);
   assert.equal(policy.verbOfControl({ text: 'Next page' }), null);
@@ -42,6 +55,23 @@ test('a click on a control that performs a blocked verb is caught', () => {
   assert.equal(policy.verbOfControl({ text: 'Pay now' }), 'pay');
   assert.equal(policy.verbOfControl({ text: 'Transfer funds' }), 'transfer');
   assert.equal(policy.verbOfControl({ text: 'Post comment' }), 'post');
+});
+
+test('common purchase, payment, and commitment phrasings are caught', () => {
+  // These were false negatives found in review: real checkout and account
+  // flows use these phrasings, and a false negative here is the costly
+  // direction — a missed prompt costs an order, not two seconds.
+  assert.equal(policy.verbOfControl({ text: 'Complete purchase' }), 'buy');
+  assert.equal(policy.verbOfControl({ text: 'Proceed to payment' }), 'buy');
+  assert.equal(policy.verbOfControl({ text: 'Authorise' }), 'submit');
+  assert.equal(policy.verbOfControl({ text: 'Subscribe' }), 'submit');
+});
+
+test('subscribe and unsubscribe are distinguished', () => {
+  // Guards the interaction the review flagged: adding a \bsubscribe\b
+  // pattern must not change what "unsubscribe" already resolved to.
+  assert.equal(policy.verbOfControl({ text: 'Unsubscribe' }), 'submit');
+  assert.equal(policy.verbOfControl({ text: 'Subscribe' }), 'submit');
 });
 
 test('the accessible name is checked as well as the visible text', () => {
