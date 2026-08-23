@@ -66,24 +66,29 @@ function hostMatches(host, pattern) {
 // Field identifiers that mean "this is a secret". Matched against type,
 // name, id, label and placeholder — after normaliseIdentifier() below, so
 // `\b` sees real word boundaries even where the source used snake_case,
-// kebab-case or camelCase.
+// kebab-case, camelCase, or a letter/digit compound like "cvv2".
 const CREDENTIAL_FIELD = /\b(pass(word|wd)?|pwd|pin|cvv|cvc|otp|one[-_ ]?time|mfa|totp|secret|token|key|api[-_ ]?key|access[-_ ]?token|auth|credential|card[-_ ]?number|cardnum|ccnum|ssn|social[-_ ]?security|passport|routing|iban|sort[-_ ]?code)\b/i;
 
-// JavaScript's \b treats `_` as a word character, so `\bsecret\b` never
-// matches inside `client_secret` — the whole compound reads as one "word"
-// to the regex engine. Rather than hand-add `[-_ ]?` to every alternative
-// above (the gap that produced: client_secret, private_key, session_token,
-// auth_code, ssn_number, and more all returning allowed:true), normalise
-// the identifier string first: split snake_case, kebab-case and camelCase
-// into real space-separated words, so `\b` lands where a human reader
-// would put a word boundary. This can only make CREDENTIAL_FIELD match
-// MORE identifiers than before, never fewer — every substring that matched
-// pre-normalisation still appears in the normalised string, just with
-// underscores/hyphens/case-boundaries turned into spaces.
+// JavaScript's \b treats both `_` and digits as word characters, so
+// `\bsecret\b` never matches inside `client_secret` (no boundary before
+// "secret") and `\bcvv\b` never matches inside `cvv2` (no boundary after
+// "cvv") — the whole compound reads as one "word" to the regex engine.
+// Rather than hand-add separator handling to every alternative above (the
+// gap that produced: client_secret, private_key, session_token, auth_code,
+// ssn_number ... and separately cvv2, pin2, token1, password1 ... all
+// returning allowed:true), normalise the identifier string first: split
+// snake_case, kebab-case, camelCase AND letter/digit boundaries into real
+// space-separated words, so `\b` lands where a human reader would put a
+// word boundary. This can only make CREDENTIAL_FIELD match MORE identifiers
+// than before, never fewer — every substring that matched pre-normalisation
+// still appears in the normalised string, just with underscores, hyphens,
+// case-boundaries and letter/digit boundaries turned into spaces.
 function normaliseIdentifier(s) {
   return String(s || '')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')  // 'APIKey' -> 'API Key'
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')      // 'mfaToken' -> 'mfa Token'
+    .replace(/([A-Za-z])(\d)/g, '$1 $2')         // 'cvv2' -> 'cvv 2', 'address2' -> 'address 2'
+    .replace(/(\d)([A-Za-z])/g, '$1 $2')         // '2fa' -> '2 fa'
     .replace(/[_-]+/g, ' ')                      // 'client_secret' -> 'client secret'
     .toLowerCase();
 }

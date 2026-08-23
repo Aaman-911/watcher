@@ -132,3 +132,30 @@ test('the widened credential-field check does not catch ordinary fields', () => 
     assert.equal(r.allowed, true, `field named "${name}" must not be refused`);
   }
 });
+
+// --- Fix round 2: letter/digit adjacency is not a word boundary ---
+//
+// \b in a JS regex treats digits as word characters too, so normaliseIdentifier's
+// case/separator splitting still left \bcvv\b unable to see a boundary inside
+// "cvv2" — the industry-standard alternate field name for CVV — or "token1",
+// "password1", and similar enumeration-suffixed credential names.
+
+test('a letter/digit compound credential field name is refused', () => {
+  const names = ['PIN2', 'cvv2', 'ssn2', 'token1', 'otp1', 'pin1', 'secret1', 'password1'];
+  for (const name of names) {
+    const r = policy.canFill({ type: 'text', name }, 'whatever');
+    assert.equal(r.allowed, false, `field named "${name}" must be refused`);
+  }
+});
+
+// A digit suffix on ordinary vocabulary is common (address2, line2 for a
+// second address line, phone2 for a second phone number, page1/item3 for
+// enumerated UI elements) and must not become a false positive just because
+// the fix now splits letter/digit boundaries.
+test('a digit suffix on ordinary field names is not refused', () => {
+  const names = ['address2', 'line2', 'phone2', 'page1', 'item3', 'option1', 'answer2', 'field1'];
+  for (const name of names) {
+    const r = policy.canFill({ type: 'text', name }, 'an ordinary value');
+    assert.equal(r.allowed, true, `field named "${name}" must not be refused`);
+  }
+});
