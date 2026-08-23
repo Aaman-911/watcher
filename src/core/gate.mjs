@@ -16,6 +16,13 @@ import path from 'node:path';
 
 const realSleep = ms => new Promise(r => setTimeout(r, ms));
 
+// Module-level, not per-gate: two separately constructed gates (two agent
+// processes' worth of code running in one Node process, or two gates built
+// back to back in a test) must still hand out distinct ids. A counter tied
+// to createGate() would reset per call and could collide across gates; this
+// one can't.
+let seq = 0;
+
 /**
  * @param {{transport: object, timeoutMs?: number, audit?: object,
  *          sleep?: (ms:number)=>Promise<void>, clock?: ()=>number,
@@ -39,7 +46,14 @@ export function createGate({
     // on screen must not be able to accidentally approve something they
     // never saw, because it had already been overwritten by a later
     // request's own pending file.
-    const id = String(clock());
+    //
+    // clock() alone is not enough: two requests created within the same
+    // millisecond would get the SAME id from String(clock()), which
+    // reopens exactly the wrongful-approval hole the id exists to close.
+    // The module-level counter guarantees uniqueness regardless of clock
+    // resolution, while staying fully deterministic under an injected
+    // clock — no crypto.randomUUID(), so tests stay reproducible.
+    const id = `${clock()}-${++seq}`;
     const pending = {
       id,
       requested_at: new Date().toISOString(),
@@ -73,7 +87,12 @@ export function createGate({
 
       if (decision === null) decision = 'reject';   // timed out — fail closed
 
-      transport.clear();
+      // Cleanup is scoped to THIS request's id (see createFileTransport
+      // below). Two requests can be in flight against one shared transport
+      // — this call must never delete another request's still-live pending
+      // record or its still-unread decision just because they happen to
+      // live at the same well-known path.
+      transport.clear(id);
     } catch (err) {
       // A broken transport is not an answer either. Whatever step it broke
       // on — publishing, polling, or cleaning up after a genuine decision —
@@ -104,6 +123,15 @@ export function createFileTransport({ pendingPath, decisionPath }) {
   mkdirSync(path.dirname(pendingPath), { recursive: true });
   mkdirSync(path.dirname(decisionPath), { recursive: true });
 
+  function readJson(p) {
+    if (!existsSync(p)) return null;
+    try {
+      return JSON.parse(readFileSync(p, 'utf8'));
+    } catch {
+      return null;   // torn write — can't confirm ownership, so treat as "not ours"
+    }
+  }
+
   return {
     publish(pending) {
       writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + '\n');
@@ -121,9 +149,22 @@ export function createFileTransport({ pendingPath, decisionPath }) {
         return null;      // torn write; try again next tick
       }
     },
-    clear() {
-      rmSync(decisionPath, { force: true });
-      rmSync(pendingPath, { force: true });
+    // Scoped cleanup. Two requests (two agent processes on one machine, or
+    // two overlapping requests in one process) can share these paths. An
+    // end-of-request clear() for request A must only ever remove a record
+    // that actually belongs to A — never a pending file that request B
+    // published over it, and never a decision a human wrote naming B. If
+    // the record on disk currently belongs to someone else (or its id
+    // can't be confirmed at all), it is left alone.
+    clear(expectedId) {
+      const pending = readJson(pendingPath);
+      if (pending !== null && pending.id === expectedId) {
+        rmSync(pendingPath, { force: true });
+      }
+      const decision = readJson(decisionPath);
+      if (decision !== null && decision.id === expectedId) {
+        rmSync(decisionPath, { force: true });
+      }
     }
   };
 }

@@ -231,3 +231,120 @@ test('a transport that fails during cleanup after a genuine approval still fails
   const gate = createGate({ transport: t, timeoutMs: 1000, sleep: noSleep });
   assert.equal(await gate.request({ verb: 'send', target: 'x', summary: 's' }), 'reject');
 });
+
+// --- Fix round 2 -----------------------------------------------------------
+//
+// Finding 1a (Important): the end-of-request clear() was still unconditional
+// even after being moved to the end of request(). Sequence that broke: A
+// publishes; B publishes, overwriting the pending file; a human approves B;
+// A then times out on its own schedule and its clear() deletes BOTH files —
+// destroying B's genuine approval before B's own poll loop can observe it.
+// Fix: clear() is scoped to the request's own id — it only removes a pending
+// or decision record that actually belongs to it.
+//
+// Finding 1b (Important): id = String(clock()) let two requests created
+// within the same millisecond collide on id, which reopens the Critical from
+// round 1 (a decision meant for one request being accepted by another). Fix:
+// a module-level monotonic counter combined with the clock value.
+
+test('two requests created in the same clock tick receive different ids, and a decision naming the first is not accepted by the second', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'watcher-gate-'));
+  const pendingPath = path.join(dir, 'pending.json');
+  const decisionPath = path.join(dir, 'decision.json');
+
+  // Two separate gates, each with its OWN elapsed counter starting at 0 —
+  // this pins both requests' id-generating clock() call to the exact same
+  // value, simulating two requests created within the same millisecond.
+  let idA;
+  {
+    let elapsed = 0;
+    const t = { publish: p => { idA = p.id; }, poll: () => null, clear: () => {} };
+    const gate = createGate({
+      transport: t, timeoutMs: 10,
+      sleep: () => { elapsed += 25; return Promise.resolve(); },
+      clock: () => elapsed
+    });
+    await gate.request({ verb: 'send', target: 'a', summary: 's' });
+  }
+
+  let idB;
+  {
+    let elapsed = 0;
+    const t = { publish: p => { idB = p.id; }, poll: () => null, clear: () => {} };
+    const gate = createGate({
+      transport: t, timeoutMs: 10,
+      sleep: () => { elapsed += 25; return Promise.resolve(); },
+      clock: () => elapsed
+    });
+    await gate.request({ verb: 'send', target: 'b', summary: 's' });
+  }
+
+  assert.ok(idA, 'request A should have published an id');
+  assert.ok(idB, 'request B should have published an id');
+  assert.notEqual(idA, idB, 'two requests created under the same clock value must still receive different ids');
+
+  // Now prove the distinct id actually matters: a decision naming A's id,
+  // already sitting on disk before a fresh request starts, must not be
+  // accepted just because the clock tick is identical.
+  const transport = createFileTransport({ pendingPath, decisionPath });
+  writeFileSync(decisionPath, JSON.stringify({ id: idA, decision: 'approve' }));
+
+  let elapsed = 0;
+  const gate = createGate({
+    transport, timeoutMs: 50,
+    sleep: () => { elapsed += 25; return Promise.resolve(); },
+    clock: () => elapsed
+  });
+  const decision = await gate.request({ verb: 'delete', target: 'account', summary: 's' });
+  assert.equal(decision, 'reject', "a decision naming a different request's id must not be accepted even under a colliding clock value");
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('two genuinely concurrent requests on one shared transport: an earlier request timing out does not destroy a later request\'s real approval', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'watcher-gate-'));
+  const pendingPath = path.join(dir, 'pending.json');
+  const decisionPath = path.join(dir, 'decision.json');
+  const transport = createFileTransport({ pendingPath, decisionPath });
+
+  // Request A: published first, never answered, short timeout — it will
+  // time out while B is still in flight.
+  let elapsedA = 0;
+  const gateA = createGate({
+    transport, timeoutMs: 50,
+    sleep: () => { elapsedA += 25; return Promise.resolve(); },
+    clock: () => elapsedA
+  });
+  const promiseA = gateA.request({ verb: 'delete', target: 'accountA', summary: 's' });
+  // gateA.request() runs synchronously up to its first `await sleep(...)`,
+  // so by this point A has already published — it is genuinely in flight,
+  // suspended mid-poll-loop, NOT awaited to completion.
+
+  // Request B: started without awaiting A first. Publishing overwrites A's
+  // pending file, exactly as the finding describes. On B's own first poll
+  // tick, a decision naming B's id is written directly to disk — standing
+  // in for a human approving what they can actually see on screen.
+  let elapsedB = 0;
+  let bAnswered = false;
+  const gateB = createGate({
+    transport, timeoutMs: 200,
+    sleep: () => {
+      elapsedB += 25;
+      if (!bAnswered) {
+        bAnswered = true;
+        const idB = JSON.parse(readFileSync(pendingPath, 'utf8')).id;
+        writeFileSync(decisionPath, JSON.stringify({ id: idB, decision: 'approve' }));
+      }
+      return Promise.resolve();
+    },
+    clock: () => elapsedB
+  });
+  const promiseB = gateB.request({ verb: 'delete', target: 'accountB', summary: 's' });
+
+  const [decisionA, decisionB] = await Promise.all([promiseA, promiseB]);
+
+  assert.equal(decisionA, 'reject', 'A never received an answer meant for it and must time out');
+  assert.equal(decisionB, 'approve', "B's genuine human approval must survive A's end-of-request cleanup, even though both shared the same on-disk files");
+
+  rmSync(dir, { recursive: true, force: true });
+});
