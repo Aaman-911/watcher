@@ -13,6 +13,7 @@ Last updated: after the Antigravity review.
 - [x] S7 — scorecard: score.mjs + scorecard.html + false-positive count
 - [ ] S8 — optional: compare.mjs product research agent
 - [~] S9 — demo prep: launchers done; check-2.sh is shallow; no rehearsal
+- [x] CORE — src/core: policy, detect, envelope, gate, outcome, audit
 
 S2 shipped **four** injected pages, not six. p6 (accessibility-tree
 mismatch) was cut before work started. p5 (in-review) was never built.
@@ -67,6 +68,17 @@ path without inventing any model output.
 **The server has now actually been run.** `results/live-inject.json` records
 a real `POST /inject` and `results/gate-decision.json` a real decision. That
 is the first http traffic this project has seen.
+
+**src/core** — 164 unit and adversarial tests, `node --test 'test/**/*.test.mjs'`,
+zero failures. The suite includes an import-graph boundary test that fails
+the build if core ever imports an npm package or reaches outside `src/core`,
+an adversarial invariant suite that feeds hostile content to each invariant
+— page text claiming authority to widen the allowlist, instructions to skip
+approval, credential-shaped fills in five disguises, and a page trying to
+close the envelope early — and per-module unit tests for policy, detect,
+envelope, gate, outcome, and audit. Credential refusal is verified to
+survive four different config keys that attempt to disable it. Wired into
+`checks/check-core.sh`, run as part of `checks/verify-all.sh`.
 
 ## Reviewed after the Antigravity session
 

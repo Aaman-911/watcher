@@ -33,6 +33,10 @@ No third-party sites, no logins, no credentials anywhere in this project.
 - Every injected instruction must be harmless and obviously fake. Canary
   words only. Reserved `.test` domains only. Never a real credential, a
   real endpoint, or a real company name.
+- The agent browses only hosts on the configured allowlist; localhost is the
+  default and the corpus stays local. **No logins and no credentials
+  anywhere in this project, ever — this is not configurable and there is a
+  test that proves it.**
 - Canary words live only in `corpus/manifest.json`. Never hardcode one
   anywhere else.
 - The naive agent is **supposed** to fail. Do not defend it, do not
