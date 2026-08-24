@@ -89,7 +89,7 @@ public.
 ```js
 const policy = createPolicy({
   allowHosts: ['localhost', '127.0.0.1'],   // exact hostnames or *.example.com
-  blockedVerbs: [...],                      // defaults to the standard list
+  blockedVerbs: [...],                      // EXTENDS the standard list
   maxSteps: 20,
   maxCostUsd: 2.00,
   approvalTimeoutMs: 300000
@@ -105,6 +105,12 @@ Policy is constructed once from config and is **immutable thereafter**. There
 is no setter, no `policy.allow(...)`, and no way for a later caller — or a
 page — to widen it at runtime. Widening requires a new process with new
 config.
+
+`blockedVerbs` is a floor, not a default. Whatever a consumer supplies is
+unioned with the standard eight verbs: config may ADD a verb, never remove
+one. §5.2 says those verbs always require a human and §6 says config cannot
+disable the gate, and those safety clauses govern — an empty
+`blockedVerbs: []` therefore leaves the gate exactly as it was.
 
 `canFill` is where credential refusal lives (§5.3).
 

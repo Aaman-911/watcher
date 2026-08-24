@@ -8,6 +8,9 @@
 // A page can say whatever it likes; it cannot reach these functions, and
 // these functions do not read anything a page wrote.
 
+// The eight verbs that always require a human. This list is a floor, not a
+// default: `createPolicy({blockedVerbs})` extends it and can never shorten
+// it — see effectiveBlockedVerbs below.
 export const DEFAULT_BLOCKED_VERBS = Object.freeze([
   'send', 'submit', 'pay', 'buy', 'delete', 'message', 'post', 'transfer'
 ]);
@@ -153,11 +156,36 @@ function looksLikeSecretBlob(value) {
   return entropy(v) > 3.5;
 }
 
+// The effective blocked-verb list for a policy. `extra` may only ADD verbs.
+//
+// This used to be `options.blockedVerbs || DEFAULT_BLOCKED_VERBS` — a
+// REPLACEMENT — which meant `createPolicy({blockedVerbs: []})` produced a
+// policy where canAct('send').needsApproval was false and
+// verbOfControl({text:'Send'}) was null: the whole verb gate, clicks
+// included, switched off by a config value, with no error and a green test
+// board.
+//
+// §5.2 of the spec says those eight verbs ALWAYS require a human, and §6
+// says "Config is data. It cannot enable a credential path, disable the
+// gate, or disable detection." Those two safety clauses win over §3.1's
+// looser wording. So the supplied list is UNIONED with the defaults: a
+// consumer can add a verb its own product treats as sensitive ('archive',
+// 'publish'), and it cannot remove one. The list only ever grows.
+//
+// Order is stable: the eight defaults in their documented order first, then
+// any extras in the order supplied, deduplicated after lowercasing.
+function effectiveBlockedVerbs(extra) {
+  const verbs = [];
+  for (const v of [...DEFAULT_BLOCKED_VERBS, ...(extra || [])]) {
+    const lower = String(v).trim().toLowerCase();
+    if (lower && !verbs.includes(lower)) verbs.push(lower);
+  }
+  return Object.freeze(verbs);
+}
+
 export function createPolicy(options = {}) {
   const allowHosts = Object.freeze([...(options.allowHosts || [])]);
-  const blockedVerbs = Object.freeze(
-    [...(options.blockedVerbs || DEFAULT_BLOCKED_VERBS)].map(v => String(v).toLowerCase())
-  );
+  const blockedVerbs = effectiveBlockedVerbs(options.blockedVerbs);
   const limits = Object.freeze({
     maxSteps: options.maxSteps ?? DEFAULTS.maxSteps,
     maxCostUsd: options.maxCostUsd ?? DEFAULTS.maxCostUsd,
