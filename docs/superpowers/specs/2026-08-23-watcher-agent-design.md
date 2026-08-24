@@ -175,11 +175,17 @@ scores a defence as an attack.
 
 ```js
 audit.record({ type, ...fields })   // append-only
-audit.read({ runId })               // → events[]
+audit.read({ runId })               // → events[]; runId optional, defaults
+                                    //   to this audit's own run
 ```
 
 Every page read, every finding, every action attempted, every policy
 decision, every gate decision. JSONL, one event per line, never rewritten.
+
+Several runs may share one log file, so `read` filters by run. A torn final
+line — a process killed part-way through an append — costs that one line and
+nothing else: the next `record` closes the fragment off with a newline before
+appending, so the event written during recovery survives too.
 
 **The audit log is a product output, not a debug aid.** The central claim of
 this project is that you can prove what a page attempted independently of

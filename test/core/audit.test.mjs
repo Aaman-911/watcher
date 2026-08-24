@@ -71,10 +71,104 @@ test('a corrupt line does not break read', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// Final review MF1. The torn line above ended in a newline, so it was one
+// bad line and cost one bad line. A process killed part-way through an
+// append leaves NO trailing newline, and the next record() used to
+// concatenate straight onto that fragment — making one unparseable line out
+// of the torn write AND the good event written after it. The event lost was
+// one recorded during recovery, which is precisely the evidence this log
+// exists to keep.
+
+test('a torn final line with no trailing newline does not swallow the next event', async () => {
+  const { dir, file } = tmpFile();
+  const audit = createAudit({ path: file, runId: 'run-7', clock: () => '2026-01-01T00:00:00.000Z' });
+  audit.record({ type: 'before_the_crash' });
+
+  // A killed process: half an event, no newline.
+  const { appendFileSync } = await import('node:fs');
+  appendFileSync(file, '{"runId":"run-7","type":"tor');
+
+  audit.record({ type: 'after_the_crash' });
+
+  assert.deepEqual(audit.read().map(e => e.type), ['before_the_crash', 'after_the_crash']);
+
+  // The torn fragment is still on disk, untouched, on a line of its own.
+  const lines = readFileSync(file, 'utf8').split('\n');
+  assert.equal(lines[1], '{"runId":"run-7","type":"tor');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('closing off a torn line is still append-only', async () => {
+  const { dir, file } = tmpFile();
+  const audit = createAudit({ path: file, runId: 'run-8', clock: () => '2026-01-01T00:00:00.000Z' });
+  audit.record({ type: 'first' });
+  const { appendFileSync } = await import('node:fs');
+  appendFileSync(file, '{"runId":"run-8","half');
+  const beforeRecovery = readFileSync(file, 'utf8');
+
+  audit.record({ type: 'second' });
+
+  const afterRecovery = readFileSync(file, 'utf8');
+  assert.ok(afterRecovery.startsWith(beforeRecovery),
+    'existing content, torn line included, must be a prefix of the new content');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a healthy log gains no blank lines from the torn-write guard', () => {
+  const { dir, file } = tmpFile();
+  const audit = createAudit({ path: file, runId: 'run-9', clock: () => '2026-01-01T00:00:00.000Z' });
+  audit.record({ type: 'a' });
+  audit.record({ type: 'b' });
+  audit.record({ type: 'c' });
+  assert.equal(readFileSync(file, 'utf8').split('\n').filter(l => l !== '').length, 3);
+  assert.deepEqual(audit.read().map(e => e.type), ['a', 'b', 'c']);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('read returns empty when the file does not exist yet', () => {
   const { dir, file } = tmpFile();
   const audit = createAudit({ path: file, runId: 'run-5' });
   assert.deepEqual(audit.read(), []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// Final review H1: the spec publishes `audit.read({ runId })`, and read()
+// used to take no argument at all — so read({runId:'someone-else'}) returned
+// THIS run's events, which is worse than an error.
+
+test('read({ runId }) reads the run it was asked for', () => {
+  const { dir, file } = tmpFile();
+  const a = createAudit({ path: file, runId: 'run-A', clock: () => '2026-01-01T00:00:00.000Z' });
+  const b = createAudit({ path: file, runId: 'run-B', clock: () => '2026-01-01T00:00:00.000Z' });
+  a.record({ type: 'x' });
+  b.record({ type: 'y' });
+  a.record({ type: 'z' });
+
+  assert.deepEqual(a.read({ runId: 'run-B' }).map(e => e.type), ['y']);
+  assert.deepEqual(b.read({ runId: 'run-A' }).map(e => e.type), ['x', 'z']);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('read({ runId }) for a run with nothing in the log returns empty', () => {
+  const { dir, file } = tmpFile();
+  const a = createAudit({ path: file, runId: 'run-A', clock: () => '2026-01-01T00:00:00.000Z' });
+  a.record({ type: 'x' });
+  assert.deepEqual(a.read({ runId: 'no-such-run' }), []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('read defaults to this audit\'s own runId', () => {
+  const { dir, file } = tmpFile();
+  const a = createAudit({ path: file, runId: 'run-A', clock: () => '2026-01-01T00:00:00.000Z' });
+  const b = createAudit({ path: file, runId: 'run-B', clock: () => '2026-01-01T00:00:00.000Z' });
+  a.record({ type: 'x' });
+  b.record({ type: 'y' });
+
+  // No argument, an empty object, and an explicit undefined runId all mean
+  // "my own run".
+  assert.deepEqual(a.read().map(e => e.type), ['x']);
+  assert.deepEqual(a.read({}).map(e => e.type), ['x']);
+  assert.deepEqual(a.read({ runId: undefined }).map(e => e.type), ['x']);
   rmSync(dir, { recursive: true, force: true });
 });
 
