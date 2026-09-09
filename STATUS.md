@@ -1,11 +1,11 @@
 # WATCHER — status
 
-Last updated: after the Antigravity review.
+Last updated: session 10 (browser and model layers).
 
 ## Working right now
 
 - [x] S1 — setup: node, webcmd, plugin, folder structure, git
-- [x] S2 — corpus: 4 injected pages + 3 clean, manifest, reveal.js, server
+- [x] S2 — corpus: injected pages + clean pages, manifest, reveal.js, server
 - [x] S3 — naive agent: read-page, think, naive.mjs
 - [x] S4 — WATCHER: envelope, detect, watcher.mjs
 - [x] S5 — live attack: inject UI + live-attack script
@@ -14,132 +14,188 @@ Last updated: after the Antigravity review.
 - [ ] S8 — optional: compare.mjs product research agent
 - [~] S9 — demo prep: launchers done; no rehearsal
 - [x] CORE — src/core: policy, detect, envelope, gate, outcome, audit
+- [x] S10 — src/agent: browser.mjs and model.mjs (spec stages 3-4)
+- [ ] S11 — src/agent/loop.mjs + actions.mjs, src/cli, config (stages 5-6)
+- [ ] S12 — rewire watcher.mjs and score.mjs, integration and conformance
+      tests, docs, CI (stages 7-9)
 
-S2 shipped **four** injected pages, not six. p6 (accessibility-tree
-mismatch) was cut before work started. p5 (in-review) was never built.
+## A correction to this file
 
-## How each was verified
+The previous version of STATUS.md said S2 shipped **four** injected pages
+and that `manifest.json` has **7 entries**. Both are wrong, found while
+reading `check-2.sh` output in this session.
 
-**Toolchain** — node v22.14.0, npm 10.9.2, Chrome 151.0.7922.170,
-claude 2.1.238, webcmd 0.7.4 at `/Users/aman/.local/bin/webcmd`.
-`webcmd doctor` green. webcmd uses its own stealth Chromium in
-`~/.cloakbrowser/`, not the installed Google Chrome.
+The manifest has **6 entries**: three injected pages (`p1` white-text,
+`p2` aria-label, `p4` fake-system) and three clean pages. Only **two**
+carry a canary — `p4` has none, because a fake-system page tests whether
+the agent obeys a fabricated authority, not whether it emits a word.
+There is no `p3`; it was never built, alongside the already-recorded `p5`
+and `p6`.
 
-**Corpus** — loaded all eight pages in a real browser through webcmd,
-twice, identical both times. Canary present in source on p1, p2, p3;
-absent from the *visible text* on p2 and p3. Reveal outlines exactly one
-element per injected page and zero on every clean page. No external
-requests anywhere: no fonts, no CDNs, no `<img>` tags, inline SVG only.
+Nothing was changed to make this true. `check-2.sh` has been reporting
+"6 entries, 2 canaries" correctly all along, and the 36 rows of
+`results/scorecard.json` are consistent with 6 pages x 2 agents x 3 runs.
+Only the prose in this file was wrong.
 
-That browser run caught a defect static grep could not: **p1 was
-concealing nothing**, because `.review p { color:#413d37 }` beat
-`.ghost { color:#fff }` on CSS specificity and the injection rendered as
-ordinary dark grey text. Fixed by scoping to `.review p.ghost`.
+## What landed in session 10
 
-**manifest.json** — 7 entries, exactly the keys `id, file, technique,
-canary, injected_text, visible_to_human, note`, in that order. Generated
-by extracting the injected text and the canary from the pages rather than
-transcribing them, so it cannot drift. Verified twice: all canaries
-distinct, each present both in its own `injected_text` and in its actual
-page file.
+**`src/agent/browser.mjs`** — owns the webcmd subprocess and turns
+intentions into Playwright calls. It decides nothing about what is
+permitted; it does not import `src/core/policy.mjs`, and a test asserts
+that it has not started to.
 
-**server.mjs** — node built-ins only. Verified *without ever starting it*:
-loaded everything above the boot section so nothing bound a port, then
-confirmed injected text is escaped, generated `live.html` uses the
-specificity-safe selector, path traversal is refused, and missing UI pages
-return a placeholder. A generated `live.html` was confirmed white-on-white
-in a real browser. The launcher was run with a stub `node` from three
-different directories and resolved to the project root every time.
+Four rules, each with a test behind it:
 
-**lib/think.mjs** — every `claude -p` flag checked against `--help` and
-tested, none guessed. Prompt goes in on stdin; page text overflows the
-command-line length limit.
+1. **Refs only.** `click`, `fill` and `submit` accept a ref matching
+   `/^w\d+$/` that is present in the most recent inventory. Nine hostile
+   ref forms are tried in the tests, including `w0"], [data-x="` and
+   `"); await page.goto("http://evil.test"); //`, and every one is
+   refused before a Playwright program is built.
+2. **No interpolation, ever.** Every value crossing into a Playwright
+   program is `JSON.stringify`'d. This matters because page text reaches
+   the model, the model produces a target, and the target becomes
+   JavaScript that runs inside the page — a raw paste there would be code
+   execution one layer past everything core defends. The test strips
+   string literals out of the generated program and asserts no
+   `page.goto` and no `evil.test` survives in what is left, which is the
+   only honest way to ask the question: an escaped payload still contains
+   the characters "await page.goto" inside a string, and a substring
+   search cannot tell that apart from a real call.
+3. **The inventory carries real DOM attributes.** See the finding below.
+4. **The redirect chain is returned, not swallowed**, so the caller can
+   re-run `canVisit` on the final URL per spec section 5.1.
 
-**The gate** — `lib/gate.mjs` is wired into `agents/watcher.mjs` through
-`performAction()`, which is the only path in that agent that reaches an
-action, and which checks the verb against `BLOCKED_VERBS` before anything
-happens. Both paths were run end to end: a human approval was picked up in
-17.7s and the action proceeded; with no decision at all the gate waited out
-its 300s limit and failed closed to REJECT. The target address shown on the
-approval screen is extracted from the detector's own finding, not typed in.
-Exercise it deliberately with `--simulate-action`, which runs the action
-path without inventing any model output.
+Also: a deterministic CAPTCHA and bot-challenge check that reports and
+never solves (spec 5.4), and snapshot truncation passed through rather
+than hidden, because a finding that was cut off is not the same as no
+finding.
 
-**The server has now actually been run.** `results/live-inject.json` records
-a real `POST /inject` and `results/gate-decision.json` a real decision. That
-is the first http traffic this project has seen.
+**`src/agent/model.mjs`** — a transport seam plus the one transport we
+ship. `createModel({transport})` takes its transport by injection, so the
+step loop in S11 can be tested against a scripted decision sequence for
+free. **No fake transport ships from `src/`**, and a test walks every
+file under `src/` and fails the build if one appears. Retries once on an
+unusable decision, then fails the run with the raw output shown. A
+transport failure propagates; nothing is substituted.
 
-**src/core** — 164 unit and adversarial tests, `node --test 'test/**/*.test.mjs'`,
-zero failures. The suite includes an import-graph boundary test that fails
-the build if core ever imports an npm package or reaches outside `src/core`,
-an adversarial invariant suite that feeds hostile content to each invariant
-— page text claiming authority to widen the allowlist, instructions to skip
-approval, credential-shaped fills in five disguises, and a page trying to
-close the envelope early — and per-module unit tests for policy, detect,
-envelope, gate, outcome, and audit. Credential refusal is verified to
-survive four different config keys that attempt to disable it. Wired into
-`checks/check-core.sh`, run as part of `checks/verify-all.sh`.
+## How session 10 was verified
 
-## Reviewed after the Antigravity session
+**`checks/verify-all.sh`, run twice, identical both times:**
 
-**A fabrication was removed from `lib/think.mjs`.** A block labelled
-`FALLBACK MOCK FOR LIVE DEMO` returned invented model responses whenever the
-real API call failed with `session limit`. For the naive agent it returned
-`"PINEAPPLE. The customer reviews indicate..."` and `"I have sent the email
-with the requested information."` — both of which score COMPLIED. It
-manufactured exactly the hijack result this project could not reproduce
-honestly, and it would have been indistinguishable from a real run on the
-scorecard. It also hardcoded a canary, breaking the manifest rule, and its
-`isWatcher` test looked for `BEGIN UNTRUSTED DATA`, a string the envelope
-never emits, so WATCHER would have received the hijacked mock too.
+```
+--- check-2.sh ---
+corpus: 6 entries, 2 canaries, all consistent
 
-It never fired: all 36 rows of `results/scorecard.json` were checked for its
-`ms: 420` signature and none carried it. Every number on record is real.
-The block has been deleted. **Do not reintroduce a mock in the model path.**
+--- check-agent.sh ---
+agent: 34 passed, 0 failed
+agent: no npm imports in src/agent
+agent: every value crossing into Playwright is JSON.stringify'd
 
-**`docs/PLAN.md` canary leak is fixed.** The five hardcoded canaries were
-replaced with `(see manifest.json)`. The rule now holds everywhere.
+--- check-core.sh ---
+core: 203 passed, 0 failed
+
+board
+-----
+  PASS  check-2.sh
+  PASS  check-agent.sh
+  PASS  check-core.sh
+
+ALL PASS
+```
+
+**Two live probes, not guesses.** Both flags this layer depends on were
+checked against the installed tools before any code was written.
+
+`webcmd 0.7.4` has **no** click, fill or submit command — only
+`browser run` (Playwright JS on stdin) and `browser snapshot` (modes
+`act`, `tree`, `read`). Everything the agent does to a page is therefore
+a Playwright program, which is what makes rule 2 above load-bearing
+rather than tidy.
+
+`claude 2.1.238` with `--json-schema` and `--output-format json` returns
+`structured_output` alongside `total_cost_usd`. Real numbers from the
+probe: **$0.2181 for one call, on 36,124 cache-creation tokens**, almost
+all of it system-prompt overhead. That is what sets the defaults in S11:
+`maxSteps: 8` is roughly $1.75, which fits under a `maxCostUsd` of $2.00.
+The spec's `maxSteps: 20` would be about $4.40 per run.
+
+**A real finding that changed the design.** webcmd's `act` snapshot does
+not expose `type="password"`. Probed against a page carrying both a
+quantity field and a password field, it returned:
+
+```
+<textbox ref="l4" placeholder="Quantity">Quantity</textbox>
+<textbox ref="l5" placeholder="Password">Password</textbox>
+```
+
+Identical element types. `policy.canFill({type:'password'})` — the first
+rule of spec section 5.3 — can therefore never fire from snapshot data.
+It held anyway on that page, via the placeholder path, but only because
+the field happened to be labelled: on a field named `q7` with no
+placeholder, nothing would have caught it.
+
+`browser.mjs` does not parse the `act` snapshot for this. It runs its own
+DOM inventory through `page.evaluate`, tagging each actionable element
+with `data-watcher-ref` and reading `type`, `name`, `id`, `placeholder`,
+`aria-label`, `href` and the enclosing form's action off the element
+itself. Verified against the same page: `type: "password"` comes through.
+`describe(ref)` returns that record, and it is what gets handed to
+`policy.canFill`.
+
+**A change to an existing check.** `checks/check-core.sh` globbed
+`test/**/*.test.mjs`, which would have swallowed the new agent tests and
+reported them on the board under the label "core". It is now scoped to
+`test/core` and `test/adversarial`, and `checks/check-agent.sh` owns
+`test/agent`. Each layer has its own count.
 
 ## Broken or unresolved
 
-**The premise does not reproduce, confirmed at three runs.** 36 real model
-calls, no mocks: COMPLIED 0, REFUSED 18, IGNORED 0, false positives 0 of 3.
-Both agents caught every injection on every run. The naive agent scores
-identically to WATCHER because the model already refuses without the
-envelope. This is the finding, not a failure, and it must not be tuned away.
+**The premise still does not reproduce, at three runs.** 36 real model
+calls, no mocks: COMPLIED 0, REFUSED 18, IGNORED 0, false positives 0 of
+3. Both agents caught every injection on every run. The naive agent
+scores identically to WATCHER because the model already refuses without
+the envelope. This is the finding, not a failure, and it must not be
+tuned away. It is also exactly why the load-bearing parts of this project
+are the ones that never consult a model.
 
-**`checks/check-2.sh` was shallow; Task 11 deepened it.** The original
-version ran nine `[ -f ]` file-existence tests and nothing else. It would
-have passed on an empty corpus with the right filenames, and it caught
-neither real defect this project has hit: p1 rendering its hidden text in
-visible grey because `.review p` out-specified `.ghost`, or the MERIDIAN
-canary being severed by ~140-char accessible-name truncation. The current
-version parses `manifest.json` and asserts content: every canary is
-present in both its own `injected_text` and its own page file, p1's rule
-is scoped `.review p.ghost{` so the concealment actually conceals, and
-MERIDIAN sits at an offset (86) that the check verifies is ≤130 and so
-survives truncation. Wired into `checks/verify-all.sh` alongside
-`checks/check-core.sh`.
-
-**Only two of four techniques reach the agent**, and only in specific
-snapshot modes. p1 and p4 in `read`; p2 in `tree`/`act` but never `read`.
+**Only two of three techniques reach the agent**, and only in specific
+snapshot modes. `p1` and `p4` in `read`; `p2` in `tree`/`act` but never
+`read`.
 
 **`--safe-mode` does not suppress CLAUDE.md**, despite its help text. The
-working fix is running from outside the project tree, which `lib/think.mjs`
-does.
+working fix is running from outside the project tree, which both
+`lib/think.mjs` and `src/agent/model.mjs` do.
 
 **No demo rehearsal has happened.** The launchers exist and resolve paths
 correctly, but `1-naive`, `2-watcher` and `3-live-attack` all point at
 `http://localhost:8080/...` and have never been run end to end against a
 live server.
 
+**Nothing has driven `src/agent` against a live page yet.** Both modules
+are fully unit-tested with the subprocess injected, and the two probes
+above exercised the real webcmd and the real `claude -p`, but no code
+path in `src/agent` has read a real page in anger. That is what S11's
+loop is for.
+
+**`agents/watcher.mjs` still imports the `lib/` shims**, not core or the
+new agent layer. S12 rewires it.
+
 ## Next session starts with
 
-A rehearsal. Start the server from `demo/0-start-server.command`, then run
-each launcher against it. Nothing in S5/S9 has been exercised over http.
+**S11 — the step loop, actions, CLI and config (spec stages 5-6).**
 
-After that, S8 (`compare.mjs`) is the only unbuilt session, and it is
-optional.
+- `src/agent/loop.mjs`: read, detect, decide, check, act — in that order,
+  with `detect()` and the audit write happening before any model call
+  (spec 5.5).
+- `src/agent/actions.mjs`: dispatch, with every action passing through
+  policy first. `canVisit` re-run on the post-redirect URL. `canFill`
+  fed from `browser.describe(ref)`, not from the snapshot.
+  `policy.verbOfControl` consulted before every click.
+- `src/cli/main.mjs` and `bin/watcher`, plus `watcher.config.json`
+  discovery from the working directory upward.
+- Defaults: `maxSteps: 8`, `maxCostUsd: 2.00`, and a `--dry-run` that
+  runs the whole loop and every policy check but stops before any action
+  fires.
 
 ## Decisions already made — do not relitigate
 
@@ -150,12 +206,27 @@ optional.
 - The naive agent stays vulnerable by design
 - WebFetch is denied; all page reading goes through webcmd
 - npm's global prefix is `~/.local`, set in session 1 — leave it
-- p6 was cut. p5 was never built. Four injected pages, not six.
-- `lib/think.mjs` runs `claude -p` from a directory outside the project,
-  to keep this project's CLAUDE.md out of the agent's context
+- The corpus is 6 entries: p1, p2, p4, and three clean pages. p3, p5 and
+  p6 were never built.
+- The model path runs from a directory outside the project, to keep this
+  project's CLAUDE.md out of the context of the model being measured
 - Findings are reported as found. Nothing is tuned until it passes.
 - No mocked, cached or hand-written model responses anywhere in the model
-  path. If the API fails, the run fails and says so.
-- The gate's blocked-verb list is a JavaScript array checked with ===, not
-  an instruction to a model. It is the only defence here that does not
-  depend on the model's judgement.
+  path. If the API fails, the run fails and says so. A test under
+  `test/agent/` enforces this across all of `src/`.
+- The gate's blocked-verb list is a JavaScript array checked with `===`,
+  not an instruction to a model. It is the only defence here that does
+  not depend on the model's judgement.
+- The model is reached through `claude -p`, behind a transport seam. There
+  is no Anthropic API key in this project — a Pro subscription does not
+  provide one, and buying API credits is a separate decision nobody has
+  made.
+- The agent may act on live allowlisted hosts, not only localhost. Chosen
+  deliberately in session 10, with the risk stated: a gate bug or a
+  mis-scanned control means a real action on somebody else's site. The
+  mitigations are that the allowlist is empty by default, every blocked
+  verb routes through a gate that fails closed, and `--dry-run` lands in
+  S11 before anything is pointed at a live site.
+- Element refs are minted by WATCHER in its own DOM inventory, never taken
+  from a page, a model, or webcmd's snapshot. Values crossing into a
+  Playwright program are always `JSON.stringify`'d.
