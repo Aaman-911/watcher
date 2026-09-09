@@ -74,6 +74,15 @@ export function renderReport({ url, task, result, auditPath, dryRun = false }) {
     out.push('  ' + rule(6));
     out.push(indent(answer, '  '));
     out.push('');
+  } else if (result.reason) {
+    // A run that ended without an answer must still say WHY on screen. Without
+    // this, a refused host printed "ended  an unrecoverable error" and nothing
+    // else, and the actual reason — which the loop had all along — was only
+    // discoverable by reading the audit log.
+    out.push('  WHY IT STOPPED');
+    out.push('  ' + rule(14));
+    out.push(indent(result.reason, '  '));
+    out.push('');
   }
 
   if (auditPath) {

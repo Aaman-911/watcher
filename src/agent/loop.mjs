@@ -91,7 +91,8 @@ export function createLoop({
     const opened = await actions.dispatch({ action: 'navigate', target: url, reason: 'opening the starting page' });
     if (!opened.ok) {
       record({ type: 'run_halted', reason: HALT.ERROR, detail: opened.reason });
-      return { steps: 0, answer: '', halted: HALT.ERROR, reason: opened.reason, findings: [], history, spent: model.spent() };
+      return { steps: 0, answer: '', halted: HALT.ERROR, reason: opened.reason,
+               findings: [], history, spent: model.spent() };
     }
 
     while (step < maxSteps) {
@@ -209,7 +210,12 @@ export function createLoop({
     if (!halt) halt = HALT.MAX_STEPS;
     record({ type: 'run_finished', halted: halt, steps: step, spent: model.spent(), findings: allFindings.length });
 
-    return { steps: step, answer, halted: halt, reason: answer, findings: allFindings, history, spent: model.spent() };
+    // `reason` explains why the run ENDED; `answer` is what the user asked
+    // for. When a run stops without an answer (budget, max steps, a refused
+    // host) the reason is the only thing worth printing, so it must not be an
+    // empty string copied from `answer`.
+    const reason = answer || `the run ended: ${halt}`;
+    return { steps: step, answer, halted: halt, reason, findings: allFindings, history, spent: model.spent() };
   }
 
   return { run };
