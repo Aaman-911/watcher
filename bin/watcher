@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+// WATCHER — executable entry point.
+import { main } from '../src/cli/main.mjs';
+
+main(process.argv.slice(2))
+  .then(code => process.exit(code))
+  .catch(err => {
+    console.error(`\n  WATCHER stopped: ${err && err.message ? err.message : err}\n`);
+    process.exit(1);
+  });

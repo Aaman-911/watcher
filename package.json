@@ -8,10 +8,14 @@
     ".": "./src/core/index.mjs"
   },
   "scripts": {
-    "test": "node --test 'test/**/*.test.mjs'"
+    "test": "node --test 'test/**/*.test.mjs'",
+    "check": "./checks/verify-all.sh"
   },
   "engines": {
     "node": ">=20.6"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "bin": {
+    "watcher": "./bin/watcher"
+  }
 }

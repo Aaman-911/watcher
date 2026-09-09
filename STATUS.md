@@ -1,6 +1,6 @@
 # WATCHER — status
 
-Last updated: session 10 (browser and model layers).
+Last updated: session 11 (step loop, actions, CLI, config).
 
 ## Working right now
 
@@ -15,7 +15,7 @@ Last updated: session 10 (browser and model layers).
 - [~] S9 — demo prep: launchers done; no rehearsal
 - [x] CORE — src/core: policy, detect, envelope, gate, outcome, audit
 - [x] S10 — src/agent: browser.mjs and model.mjs (spec stages 3-4)
-- [ ] S11 — src/agent/loop.mjs + actions.mjs, src/cli, config (stages 5-6)
+- [x] S11 — src/agent/loop.mjs + actions.mjs + report.mjs, src/cli, bin/watcher (stages 5-6)
 - [ ] S12 — rewire watcher.mjs and score.mjs, integration and conformance
       tests, docs, CI (stages 7-9)
 
@@ -148,6 +148,106 @@ reported them on the board under the label "core". It is now scoped to
 `test/core` and `test/adversarial`, and `checks/check-agent.sh` owns
 `test/agent`. Each layer has its own count.
 
+## What landed in session 11
+
+The agent is runnable. `bin/watcher <url> --task "..."` works end to end.
+
+**`src/agent/actions.mjs`** — where a model's intention meets policy. Every
+branch runs its policy check first, in ordinary JavaScript, and only then
+touches the page. There is no path through the file that reaches a browser
+mutation without a check in front of it.
+
+- `navigate` checks `canVisit` before the fetch and again on the URL it
+  actually landed on. A page that redirects off the allowlist is refused,
+  which also means the loop never snapshots it, so its text never reaches
+  the model.
+- `click` asks `policy.verbOfControl` what the control actually does. A
+  click on "Reviews" is navigation; a click on "Place order" is a purchase
+  and goes to a human.
+- `fill` hands `policy.canFill` the element as `browser.describe(ref)`
+  reports it — real DOM attributes, not the snapshot's flattened view.
+- `submit` always asks a human, whatever the button is labelled.
+- With no gate wired, a sensitive action fails closed rather than
+  proceeding unasked.
+- `dryRun` runs every check and every audit write, then stops short of the
+  mutation.
+
+**`src/agent/loop.mjs`** — read, detect, decide, check, act. Halts on
+`finish`, `maxSteps`, the budget, a bot challenge, or an unrecoverable
+error. A policy refusal is not fatal: it is recorded, it appears in the
+history the model sees next step, and the run carries on, which is what
+lets the agent try another route rather than dying on a locked door.
+
+**`src/cli/config.mjs`** — `watcher.config.json`, found by walking up from
+the working directory, with CLI flags overriding it. Config is data: an
+unknown key is an **error**, not something ignored, and eleven keys that
+would reach for a safety switch (`allowCredentials`, `skipGate`,
+`autoApprove`, `disableDetection`, `solveCaptcha`, `allowAllHosts` and
+the rest) are refused by name with a message saying why. Silently ignoring
+those is the dangerous behaviour — somebody writes one, sees no error, and
+believes it took effect.
+
+**`src/cli/main.mjs` and `bin/watcher`** — wiring only. A terminal gate
+transport asks on stdin when someone is watching, and falls back to the
+file transport `server.mjs` already reads when nothing is. An empty
+allowlist stops the run before anything is fetched, with an explanation
+rather than a stack trace.
+
+## A real bug the tests caught in session 11
+
+Action dispatch looked up handlers in a plain object literal. That
+inherits from `Object.prototype`, so `HANDLERS['__proto__']` returned that
+prototype, and `HANDLERS['constructor']` returned the `Object`
+constructor — a callable. A decision of `{action: "constructor"}` would
+have invoked `Object(decision)`, which returns the decision itself, and
+the result would have been recorded as a **completed action**.
+
+The model picks `action` from a schema enum, so this needed the enum to be
+violated to fire. That is exactly the assumption this layer is not allowed
+to make: the reason the check is written in JavaScript is that it has to
+hold when the layer above it does not. Fixed with a null-prototype map and
+a `typeof handler === 'function'` check at the lookup. Found by a test that
+tried `__proto__` and `constructor` deliberately, not by reading the code.
+
+## How session 11 was verified
+
+`checks/verify-all.sh`, run twice, identical both times:
+
+```
+--- check-2.sh ---
+corpus: 6 entries, 2 canaries, all consistent
+
+--- check-agent.sh ---
+agent: 65 passed, 0 failed
+agent: no npm imports in src/agent
+agent: every value crossing into Playwright is JSON.stringify'd
+
+--- check-cli.sh ---
+cli: 26 passed, 0 failed
+cli: bin/watcher runs and prints usage
+cli: no safety decisions in src/cli
+cli: no flag disables the gate, credential refusal or detection
+
+--- check-core.sh ---
+core: 203 passed, 0 failed
+
+board
+-----
+  PASS  check-2.sh
+  PASS  check-agent.sh
+  PASS  check-cli.sh
+  PASS  check-core.sh
+
+ALL PASS
+```
+
+294 tests in total. The one that matters most asserts ordering: the
+`findings` event reaches the audit log at a lower index than
+`model_decided`. A companion test kills the model call outright and proves
+the findings survive it — the model produced nothing, and the log still
+shows the page tried to exfiltrate a transcript and tried to conceal
+itself.
+
 ## Broken or unresolved
 
 **The premise still does not reproduce, at three runs.** 36 real model
@@ -182,20 +282,23 @@ new agent layer. S12 rewires it.
 
 ## Next session starts with
 
-**S11 — the step loop, actions, CLI and config (spec stages 5-6).**
+**S12 — rewire, integration, conformance, docs, CI (spec stages 7-9).**
 
-- `src/agent/loop.mjs`: read, detect, decide, check, act — in that order,
-  with `detect()` and the audit write happening before any model call
-  (spec 5.5).
-- `src/agent/actions.mjs`: dispatch, with every action passing through
-  policy first. `canVisit` re-run on the post-redirect URL. `canFill`
-  fed from `browser.describe(ref)`, not from the snapshot.
-  `policy.verbOfControl` consulted before every click.
-- `src/cli/main.mjs` and `bin/watcher`, plus `watcher.config.json`
-  discovery from the working directory upward.
-- Defaults: `maxSteps: 8`, `maxCostUsd: 2.00`, and a `--dry-run` that
-  runs the whole loop and every policy check but stops before any action
-  fires.
+- `agents/watcher.mjs` and `report/score.mjs` rewired onto core and the
+  new agent layer; the `lib/` shims deleted.
+- `test/integration/` over real HTTP against the corpus, with the test
+  starting and stopping its own server on its own port. The rule that the
+  demo server is never started from a session stands: that rule exists
+  because `server.mjs` runs forever and would hang the session, and a test
+  that binds, runs and kills does not.
+- `test/conformance/` — the suite a third party runs against their own
+  core integration.
+- README rewritten around the library and the agent rather than the demo.
+- CI running `checks/verify-all.sh`.
+
+Still unrun: `bin/watcher` has never made a real model call against a live
+page. One real end-to-end run against the local corpus is the last thing
+S12 should do, with the cost reported.
 
 ## Decisions already made — do not relitigate
 
@@ -230,3 +333,12 @@ new agent layer. S12 rewires it.
 - Element refs are minted by WATCHER in its own DOM inventory, never taken
   from a page, a model, or webcmd's snapshot. Values crossing into a
   Playwright program are always `JSON.stringify`'d.
+- An unknown config key is an error, not a warning. There is no
+  pass-through, and there is no flag or key anywhere that disables the
+  gate, the credential refusal or the detector.
+- `maxSteps` defaults to 8, not the spec's 20, because a measured
+  `claude -p` call costs $0.2181 and 20 steps would exceed the $2.00
+  default budget before the run started.
+- The allowlist is empty by default and the CLI refuses to run with it
+  empty. An agent with a default-open allowlist will eventually read
+  something nobody chose.
