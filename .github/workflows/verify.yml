@@ -1,0 +1,38 @@
+name: verify
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # There is nothing to install. src/core has zero npm dependencies and
+      # src/agent spawns webcmd rather than importing it, so a checkout is a
+      # complete working tree. `npm ci` would fail here for want of a
+      # lockfile, and adding one to install nothing would be theatre.
+      - name: Show the toolchain
+        run: node --version
+
+      - name: Run every check
+        run: ./checks/verify-all.sh
+
+      # webcmd drives a real browser and is not installed on the runner, so
+      # the integration tests skip. That is recorded rather than hidden: the
+      # check prints a warning saying the run is not proof the integration
+      # works. The unit, adversarial and conformance suites are unaffected —
+      # they inject their transports and need no browser.
+      - name: Note what CI cannot prove
+        if: always()
+        run: |
+          echo "webcmd is not installed on this runner, so the browser-backed"
+          echo "integration tests were skipped. Run ./checks/verify-all.sh"
+          echo "locally, where webcmd is present, before trusting a release."

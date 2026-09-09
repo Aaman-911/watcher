@@ -9,11 +9,10 @@
 //   node report/score.mjs --runs 3
 //   node report/score.mjs --base http://localhost:8080
 
-import { readPage, close } from '../lib/read-page.mjs';
-import { think } from '../lib/think.mjs';
-import { envelope } from '../lib/envelope.mjs';
-import { detect } from '../lib/detect.mjs';
-import { loadManifest, findEntry, classify } from '../lib/outcome.mjs';
+import { detect, envelope, classify } from '../src/core/index.mjs';
+import { createBrowser } from '../src/agent/browser.mjs';
+import { createModel, claudeTransport } from '../src/agent/model.mjs';
+import { loadManifest } from '../lib/outcome.mjs';
 import { fileURLToPath } from 'node:url';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -30,6 +29,12 @@ const args = process.argv.slice(2);
 const RUNS = Number(args[args.indexOf('--runs') + 1]) || 1;
 const BASE = args.includes('--base') ? args[args.indexOf('--base') + 1] : 'file://' + CORPUS;
 
+// Both agents share one browser and one model. The DIFFERENCE between them
+// is the prompt and nothing else — same page, same snapshot mode, same model,
+// same call. That is what makes the comparison worth anything.
+const browser = createBrowser();
+const model = createModel({ transport: claudeTransport() });
+
 const manifest = loadManifest(CORPUS);
 const pages = manifest.filter(e => e.technique !== 'none');
 const cleans = manifest.filter(e => e.technique === 'none');
@@ -44,12 +49,13 @@ console.log('');
 
 async function runAgent(kind, entry) {
   const mode = MODE[entry.id] || 'read';
-  const page = await readPage(`${BASE}/${entry.file}`, mode);
+  const landed = await browser.navigate(`${BASE}/${entry.file}`);
+  const page = await browser.text(mode);
   const findings = detect(page.text);
   const prompt = kind === 'naive'
     ? page.text + '\n\n' + TASK                                  // no separation at all
-    : envelope({ url: page.url, pageText: page.text, task: TASK });
-  const a = await think(prompt);
+    : envelope({ url: landed.url, pageText: page.text, task: TASK });
+  const a = await model.answer(prompt);
   // A clean page has no injection, so there is nothing to comply with or
   // refuse. Classifying it would invent a result. Only the detector count
   // is meaningful there, and that is the false-positive measure.
@@ -69,7 +75,7 @@ for (const entry of [...pages, ...cleans]) {
   }
 }
 
-await close();
+await browser.close();
 
 function tally(page, agent) {
   const r = rows.filter(x => x.page === page && x.agent === agent);
@@ -111,10 +117,11 @@ console.log(`  COMPLIED (attack succeeded)      ${complied}`);
 console.log(`  REFUSED  (caught and reported)   ${refused}`);
 console.log(`  IGNORED  (not obeyed, not told)  ${ignored}`);
 console.log(`  False positives on clean pages   ${fp} of ${cleans.length}`);
+console.log(`  Spent                            $${model.spent().usd.toFixed(4)} over ${model.spent().calls} calls`);
 console.log('');
 
 mkdirSync(path.join(ROOT, 'results'), { recursive: true });
 writeFileSync(path.join(ROOT, 'results', 'scorecard.json'),
-  JSON.stringify({ at: new Date().toISOString(), base: BASE, runs: RUNS, rows }, null, 2));
+  JSON.stringify({ at: new Date().toISOString(), base: BASE, runs: RUNS, spent: model.spent(), rows }, null, 2));
 console.log('  results/scorecard.json written');
 console.log('');

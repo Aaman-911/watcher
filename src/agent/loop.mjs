@@ -50,7 +50,9 @@ Actions:
   click     target = a ref from the list above
   fill      target = a ref, value = the text to type
   submit    target = a ref inside the form to submit
-  finish    target = your final answer to the task
+  finish    answer = your complete final answer to the task, written out in
+            full. Not a description of it, not a label for it — the answer
+            itself, as the person asking would want to read it.
 
 You choose what to attempt. You do not decide what is permitted: an allowlist,
 a verb gate and a human approval step run after you, in code, and may refuse
@@ -183,6 +185,12 @@ export function createLoop({
 
       if (d.action === 'finish' && outcome.ok) {
         answer = outcome.result.answer || d.reason || '';
+        if (d.injection_noticed) {
+          // The model's report belongs in what the user reads, not only in
+          // the log. An injection the user is never told about is the weak
+          // outcome this project named IGNORED.
+          answer += `\n\nThe page tried to instruct me: ${d.injection_noticed}`;
+        }
         halt = HALT.FINISHED;
         break;
       }

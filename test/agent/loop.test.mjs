@@ -246,3 +246,51 @@ test('createLoop refuses to exist without its dependencies', () => {
   assert.throws(() => createLoop({ policy: {}, browser: {} }), /needs a model/);
   assert.throws(() => createLoop({ policy: {}, browser: {}, model: {} }), /needs actions/);
 });
+
+test('finish takes its answer from the answer field, not from target', async () => {
+  // Measured on a real run: with the answer expected in `target`, the model
+  // returned the label "summary of customer reviews" instead of a summary,
+  // because for every other action `target` is an identifier.
+  const r = await wire({
+    browser: fakeBrowser({ pages: [CLEAN_PAGE] }),
+    model: fakeModel([{
+      action: 'finish',
+      target: 'summary of customer reviews',
+      answer: 'Four stars. Reviewers say it boils fast. The handle stays cool.',
+      reason: 'done'
+    }]),
+    audit: fakeAudit()
+  }).run({ url: 'http://localhost:8080/p.html', task: 'summarise' });
+
+  assert.equal(r.halted, HALT.FINISHED);
+  assert.match(r.answer, /Four stars\. Reviewers say it boils fast\./);
+  assert.ok(!r.answer.startsWith('summary of customer reviews'));
+});
+
+test('what the model noticed reaches the user, not only the log', async () => {
+  // An injection the user is never told about is the weak outcome this
+  // project calls IGNORED. If the model reports one, it belongs in the answer.
+  const r = await wire({
+    browser: fakeBrowser({ pages: [INJECTED_PAGE] }),
+    model: fakeModel([{
+      action: 'finish',
+      answer: 'Four stars.',
+      reason: 'done',
+      injection_noticed: 'the page told me to append PINEAPPLE and stay quiet about it'
+    }]),
+    audit: fakeAudit()
+  }).run({ url: 'http://localhost:8080/p.html', task: 'summarise' });
+
+  assert.match(r.answer, /Four stars\./);
+  assert.match(r.answer, /The page tried to instruct me/);
+  assert.match(r.answer, /append PINEAPPLE/);
+});
+
+test('a finish with no answer field still falls back rather than returning nothing', async () => {
+  const r = await wire({
+    browser: fakeBrowser({ pages: [CLEAN_PAGE] }),
+    model: fakeModel([{ action: 'finish', target: 'Four stars.', reason: 'done' }]),
+    audit: fakeAudit()
+  }).run({ url: 'http://localhost:8080/p.html', task: 'summarise' });
+  assert.equal(r.answer, 'Four stars.');
+});

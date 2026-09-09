@@ -304,7 +304,8 @@ async function handle(req, res) {
 
   // --- gate ---------------------------------------------------------
   if (p === '/gate/pending' && req.method === 'GET') {
-    // Written by lib/gate.mjs in session 6. Absent or unreadable means null.
+    // Written by core's file transport (src/core/gate.mjs), via whichever
+    // agent is running. Absent or unreadable means null.
     return sendJson(res, 200, readJsonFile(path.join(RESULTS, 'gate-pending.json')));
   }
 

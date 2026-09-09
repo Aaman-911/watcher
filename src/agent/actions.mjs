@@ -161,7 +161,9 @@ export function createActions({ policy, browser, gate = null, audit = null, dryR
 
   async function finish(decision) {
     record({ type: 'finish', reason: decision.reason || '' });
-    return DONE({ finished: true, answer: decision.target || decision.value || decision.reason || '' });
+    // `answer` first: it is the field the schema reserves for the final text.
+    // The others are fallbacks for a model that filled the old slot.
+    return DONE({ finished: true, answer: decision.answer || decision.target || decision.value || decision.reason || '' });
   }
 
   // A NULL-PROTOTYPE map, and a typeof check at the lookup. A plain object

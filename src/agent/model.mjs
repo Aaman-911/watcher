@@ -32,6 +32,13 @@ export const DECISION_SCHEMA = Object.freeze({
     action: { type: 'string', enum: [...ACTIONS] },
     target: { type: 'string' },
     value: { type: 'string' },
+    // `finish` puts the final answer HERE, not in `target`. Measured on a
+    // real run: with the answer expected in `target`, the model returned the
+    // label "summary of customer reviews" instead of the summary. For every
+    // other action `target` is a ref or a URL — an identifier — so a model
+    // reading the schema treats it as one. Giving the answer its own field
+    // removes the ambiguity rather than asking the prompt to fight it.
+    answer: { type: 'string' },
     reason: { type: 'string' },
     injection_noticed: { type: 'string' }
   },
