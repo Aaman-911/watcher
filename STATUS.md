@@ -1,7 +1,6 @@
 # WATCHER — status
 
-Last updated: session 12. The build described in
-`docs/superpowers/specs/2026-08-23-watcher-agent-design.md` is complete.
+Last updated: session 13 (WATCHER Shield, the browser extension).
 
 ## Working right now
 
@@ -20,6 +19,12 @@ Last updated: session 12. The build described in
 - [x] S11 — src/agent/loop.mjs, actions.mjs, report.mjs, src/cli, bin/watcher
       (stages 5-6)
 - [x] S12 — rewire, integration, conformance, README, CI (stages 7-9)
+- [x] S13 — WATCHER Shield: a passive Chrome extension that warns you about
+      hidden text aimed at an AI. No model, no API key, no cost per page.
+- [ ] S14 — the agentic extension, if wanted. Blocked on the model path: an
+      extension cannot spawn `claude -p`, so it needs a native-messaging
+      companion app. Decided in session 13 to ship the shield first and judge
+      the agent version after the detector has met the real web.
 
 ## The thing that now exists
 
@@ -176,6 +181,87 @@ independently reported the same injection in `injection_noticed`. Both are in
 `results/audit.jsonl`, and the detector's findings were written there before
 the model was called.
 
+## What landed in session 13
+
+`extension/` — WATCHER Shield, a Manifest V3 Chrome extension. Load it
+unpacked from `chrome://extensions`; `extension/README.md` has the steps.
+It watches every page you open, warns you when it finds text aimed at an AI,
+and sends nothing anywhere.
+
+**Why an extension was cheap to build.** `policy.mjs`, `detect.mjs`,
+`envelope.mjs` and `outcome.mjs` have **zero imports** — they are pure
+JavaScript and run in a browser unchanged. Every filesystem call in
+`gate.mjs` lives inside `createFileTransport`, not in `createGate`. The
+transport seam built in session 10 is what made the port a copy rather than
+a rewrite.
+
+**`extension/core/extract.mjs` is the part that is genuinely new**, and it is
+the reason the extension is worth having. A person reads `innerText`; a model
+reading the same page gets attribute text that never renders and elements the
+CSS hid. The extractor collects what the *model* would get, and labels each
+piece with **why** it was invisible — `display:none`, `opacity:0`, zero
+font-size, clipped, pushed off-screen, or painted the same colour as its
+background, measured by WCAG contrast ratio. A finding therefore reads "this
+was hidden by painting it the colour of the page behind it", not merely "we
+found something".
+
+**One source of truth, with no bundler.** `extension/core/detect.mjs` is a
+byte-identical copy of `src/core/detect.mjs`, loaded by dynamic `import()`
+from `web_accessible_resources`. `checks/check-extension.sh` diffs them and
+fails if they drift, which is how the no-build-step rule survives contact
+with a browser extension.
+
+## A design error a real page caught in session 13
+
+Every `aria-label` was being marked `concealed`. The integration suite ran the
+extractor over a real corpus clean page, which has a perfectly innocent
+`aria-label`, and reported it as hiding something.
+
+That would have been a bad product, not just a bad test. An aria-label is
+ordinary, correct accessibility markup present on almost every well-built
+page. Counting it as concealment means the popup announces "text you cannot
+see!" on clean sites, and a warning that fires everywhere is a warning nobody
+reads.
+
+Split into two ideas. `concealed` means somebody took a deliberate step to
+hide text with CSS. `undisplayed` means the text simply never appears as page
+text, which attributes always satisfy. An attribute carrying an injection is
+still reported as a finding — the `why` says exactly where it lived — it is
+just not counted as concealment. The popup says "3 deliberately hidden from
+view, 1 in attributes that are never displayed" rather than blurring them.
+
+## How session 13 was verified
+
+`checks/verify-all.sh`, run twice, identical both times. Seven checks, **342
+tests**, ALL PASS. The new rows:
+
+```
+--- check-extension.sh ---
+extension: 21 passed, 0 failed
+extension: detect.mjs is byte-identical to src/core/detect.mjs
+extension: no network call anywhere in the extension
+extension: nothing renders page text as markup
+extension: Manifest V3, permissions are [storage] + <all_urls>, nothing more
+
+--- check-integration.sh ---
+integration: 15 passed, 0 failed, 0 skipped
+```
+
+The extension check enforces four promises rather than asserting them in a
+comment: one source of truth for the detector; no `fetch`, `XMLHttpRequest`,
+`WebSocket`, `EventSource`, `sendBeacon` or `importScripts` anywhere; no
+`innerHTML`, `insertAdjacentHTML` or `document.write`, because every string
+the popup renders came from a web page and an extension that renders
+attacker-controlled text as markup has handed the page a foothold inside
+itself; and permissions that are exactly `storage` plus `<all_urls>`, with no
+`tabs` permission, so it cannot see your tab list or history.
+
+`test/integration/shield.test.mjs` runs `collectPageText` in a **real
+rendering engine** against one page carrying white-on-white text,
+`display:none`, `opacity:0`, off-screen `text-indent`, an `alt` injection and
+an `aria-label` injection at once — plus grey-on-white body text that must NOT
+be flagged. It injects the actual module source rather than a copy of it.
+
 ## Broken or unresolved
 
 **The premise still does not reproduce, at three runs.** 36 real model calls:
@@ -197,6 +283,16 @@ and `src/agent/model.mjs` both do.
 `3-live-attack` point at `http://localhost:8080/...` and have never been run
 end to end against a live `server.mjs`.
 
+**The extension has never been loaded into a real Chrome.** Every part of it
+is tested — the pure logic by unit tests, the DOM walking in a real rendering
+engine through webcmd — but nobody has yet clicked "Load unpacked" and browsed
+with it. Chrome's own extension runtime (`chrome.runtime.sendMessage`, the
+service worker lifecycle, badge painting) is the one layer no test here
+covers.
+
+**The extension has no icon files**, so Chrome shows a generic puzzle piece.
+It also does not scan inside iframes (`all_frames: false`).
+
 **The agent has never been pointed at a third-party site.** It is built for
 it and the allowlist supports it, but every run so far has been against the
 local corpus. Spec section 11's warning stands: the corpus was written by one
@@ -208,12 +304,17 @@ per page per agent and has not been spent.
 
 ## If there is a next session
 
-1. Re-run `report/score.mjs --runs 1` to confirm the rewire produces the same
+1. **Load the extension in Chrome and browse with it for a day.** This is the
+   cheapest and most informative thing left: it costs nothing to run, and it
+   is the only way to find out how `detect.mjs` behaves against prose nobody
+   here wrote. Expect false positives on ordinary pages that say "the
+   assistant should..." and tighten the patterns against what actually fires.
+2. Re-run `report/score.mjs --runs 1` to confirm the rewire produces the same
    numbers as the pre-rewire scorecard. About $2.60.
-2. Point `bin/watcher --dry-run` at a real third-party site and read the audit
+3. Point `bin/watcher --dry-run` at a real third-party site and read the audit
    log. Nothing acts in dry run, so this is safe and is the honest next test
    of the detector against prose nobody here wrote.
-3. The demo rehearsal in S9, if the demo still matters.
+4. The demo rehearsal in S9, if the demo still matters.
 
 ## Decisions already made — do not relitigate
 
@@ -243,5 +344,13 @@ per page per agent and has not been spent.
 - `maxSteps` defaults to 8, not the spec's 20: a measured `claude -p` call
   costs about $0.25, so 20 steps would exceed the $2.00 default budget.
 - The allowlist is empty by default and the CLI refuses to run with it empty.
+- The extension is passive by design: it warns, it never acts. An agentic
+  extension would run in a browser where you are logged into everything,
+  which is a far larger blast radius than the empty profile `bin/watcher`
+  drives, and it needs a companion app to reach `claude -p`. Shield first was
+  a deliberate choice, not a staging accident.
+- `concealed` (deliberately hidden with CSS) and `undisplayed` (never rendered
+  as page text, attributes included) are different things and must stay
+  separate. Blurring them makes the warning fire on every well-built page.
 - The conformance suite must be capable of failing. It is run against a
   deliberately broken integration in our own tests to prove it.
